@@ -137,6 +137,12 @@ export function TimeWindowPicker({
               {timeWindows['30d'].shortcut}
             </DropdownMenuShortcut>
           </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => onChange(timeWindows['60d'].key)}>
+            {timeWindows['60d'].label}
+            <DropdownMenuShortcut>
+              {timeWindows['60d'].shortcut}
+            </DropdownMenuShortcut>
+          </DropdownMenuItem>
           <DropdownMenuItem onClick={() => onChange(timeWindows['6m'].key)}>
             {timeWindows['6m'].label}
             <DropdownMenuShortcut>
