@@ -30,7 +30,7 @@ export function useOverviewOptions() {
   const [range, setRange] = useQueryState(
     'range',
     parseAsStringEnum(mapKeys(timeWindows))
-      .withDefault('7d')
+      .withDefault('60d')
       .withOptions({
         ...nuqsOptions,
         clearOnDefault: false,

@@ -34,6 +34,11 @@ export const timeWindows = {
     label: 'Last 30 days',
     shortcut: 'T',
   },
+  '60d': {
+    key: '60d',
+    label: 'Last 60 days',
+    shortcut: 'S',
+  },
   '6m': {
     key: '6m',
     label: 'Last 6 months',
@@ -213,6 +218,7 @@ export function getDefaultIntervalByRange(
   if (
     range === '7d' ||
     range === '30d' ||
+    range === '60d' ||
     range === 'lastMonth' ||
     range === 'monthToDate'
   ) {
