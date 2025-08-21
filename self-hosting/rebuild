@@ -2,5 +2,5 @@
 
 NAME=$1
 
-docker compose build $NAME
+docker compose build --build-arg CACHE_BUST=$(date +%s) $NAME
 docker compose up -d --no-deps --force-recreate $NAME
