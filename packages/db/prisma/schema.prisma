@@ -271,7 +271,6 @@ enum ChartType {
   funnel
   retention
   conversion
-  first_seen
 }
 
 model Dashboard {

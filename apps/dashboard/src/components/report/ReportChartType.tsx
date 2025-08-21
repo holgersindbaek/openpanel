@@ -4,7 +4,6 @@ import {
   ChartBarIcon,
   ChartColumnIncreasingIcon,
   ConeIcon,
-  EyeIcon,
   GaugeIcon,
   Globe2Icon,
   LineChartIcon,
@@ -59,7 +58,6 @@ export function ReportChartType({
     retention: UsersIcon,
     map: Globe2Icon,
     conversion: TrendingUpIcon,
-    first_seen: EyeIcon,
   };
 
   return (
