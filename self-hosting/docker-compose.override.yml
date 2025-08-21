@@ -1,0 +1,9 @@
+version: '3'
+
+services:
+  op-dashboard:
+    build:
+      context: ..
+      dockerfile: apps/dashboard/Dockerfile
+
+
