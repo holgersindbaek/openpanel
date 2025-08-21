@@ -82,9 +82,14 @@ export function FilterItem({ filter, event }: FilterProps) {
         ...event,
         filters: event.filters.map((item) => {
           if (item.id === id) {
+            // Keep both values for 'between', otherwise keep only first value
+            const newValue = operator === 'between' 
+              ? item.value ? item.value.filter(Boolean).slice(0, 2) : []
+              : item.value ? item.value.filter(Boolean).slice(0, 1) : [];
+            
             return {
               ...item,
-              value: item.value ? item.value.filter(Boolean).slice(0, 1) : [],
+              value: newValue,
               operator,
             };
           }
@@ -176,6 +181,37 @@ export function PureFilterItem({
             className="flex-1"
             onChange={changeFilterValue}
             placeholder="Select..."
+          />
+        ) : filter.operator === 'between' ? (
+          <div className="flex flex-1 gap-1">
+            <InputEnter
+              value={filter.value[0] ? String(filter.value[0]) : ''}
+              placeholder="Min"
+              type="number"
+              onChangeValue={(value) => {
+                const newValue = [value, filter.value[1] || ''];
+                changeFilterValue(newValue.filter(v => v !== ''));
+              }}
+            />
+            <InputEnter
+              value={filter.value[1] ? String(filter.value[1]) : ''}
+              placeholder="Max"
+              type="number"
+              onChangeValue={(value) => {
+                const newValue = [filter.value[0] || '', value];
+                changeFilterValue(newValue.filter(v => v !== ''));
+              }}
+            />
+          </div>
+        ) : filter.operator === 'greaterThan' || 
+          filter.operator === 'greaterThanOrEqual' || 
+          filter.operator === 'lessThan' || 
+          filter.operator === 'lessThanOrEqual' ? (
+          <InputEnter
+            value={filter.value[0] ? String(filter.value[0]) : ''}
+            type="number"
+            placeholder="Value"
+            onChangeValue={(value) => changeFilterValue([value])}
           />
         ) : (
           <InputEnter
