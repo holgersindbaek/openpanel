@@ -148,18 +148,17 @@ export class OpenPanel {
       this.flush();
     }
 
-    if (Object.keys(payload).length > 1) {
-      return this.send({
-        type: 'identify',
-        payload: {
-          ...payload,
-          properties: {
-            ...this.global,
-            ...payload.properties,
-          },
+    // Always send identify request to ensure profile exists
+    return this.send({
+      type: 'identify',
+      payload: {
+        ...payload,
+        properties: {
+          ...this.global,
+          ...payload.properties,
         },
-      });
-    }
+      },
+    });
   }
 
   async alias(payload: AliasPayload) {
