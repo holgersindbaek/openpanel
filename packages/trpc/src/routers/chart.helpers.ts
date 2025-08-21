@@ -58,7 +58,7 @@ export function withFormula(
   }
 
   if (events.length === 1) {
-    return series.map((serie) => {
+    return series.map((serie, serieIndex) => {
       if (!serie.event.id) {
         return serie;
       }
@@ -66,9 +66,17 @@ export function withFormula(
       return {
         ...serie,
         data: serie.data.map((item) => {
-          serie.event.id;
+          const eventIndex = events.findIndex(
+            (event) => event.id === serie.event.id,
+          );
+          const readableId = alphabetIds[eventIndex >= 0 ? eventIndex : serieIndex];
+          
+          if (!readableId) {
+            throw new Error('no alphabet id for serie in withFormula');
+          }
+
           const scope = {
-            [serie.event.id ?? '']: item?.count ?? 0,
+            [readableId]: item?.count ?? 0,
           };
           const count = mathjs
             .parse(formula)
