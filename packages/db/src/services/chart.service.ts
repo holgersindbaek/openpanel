@@ -541,3 +541,128 @@ export function getEventFiltersWhereClause(filters: IChartEventFilter[]) {
 
   return where;
 }
+
+export function getFirstSeenSql({
+  event,
+  breakdowns,
+  interval,
+  startDate,
+  endDate,
+  projectId,
+  limit,
+  timezone,
+}: IGetChartDataInput & { timezone: string }) {
+  // Build the first seen query using a subquery approach
+  const eventFilters = getEventFiltersWhereClause(event.filters);
+  const eventFilterClauses = Object.values(eventFilters).map(clause => `AND ${clause}`).join(' ');
+  
+  const breakdownSelects = breakdowns.length > 0 
+    ? breakdowns.map((breakdown) => `${getSelectPropertyKey(breakdown.name)} as ${breakdown.name}`).join(', ') + ','
+    : '';
+  
+  const breakdownGroupBy = breakdowns.length > 0 
+    ? ', ' + breakdowns.map(b => b.name).join(', ')
+    : '';
+
+  // First, find the first occurrence of each profile/event combination
+  const firstSeenSubquery = `
+    SELECT 
+      profile_id,
+      ${event.name === '*' ? '' : `name,`}
+      ${breakdownSelects}
+      min(created_at) as first_seen_date
+    FROM ${TABLE_NAMES.events}
+    WHERE project_id = ${escape(projectId)}
+      AND profile_id != ''
+      ${event.name !== '*' ? `AND name = ${escape(event.name)}` : ''}
+      ${eventFilterClauses}
+    GROUP BY profile_id${event.name === '*' ? '' : ', name'}${breakdownGroupBy}
+  `;
+
+  // Then aggregate by time intervals
+  let dateSelect: string;
+  let dateFill: string;
+
+  switch (interval) {
+    case 'minute': {
+      dateSelect = 'toStartOfMinute(first_seen_date) as date';
+      dateFill = `date ASC WITH FILL FROM toStartOfMinute(toDateTime('${startDate}')) TO toStartOfMinute(toDateTime('${endDate}')) STEP toIntervalMinute(1)`;
+      break;
+    }
+    case 'hour': {
+      dateSelect = 'toStartOfHour(first_seen_date) as date';
+      dateFill = `date ASC WITH FILL FROM toStartOfHour(toDateTime('${startDate}')) TO toStartOfHour(toDateTime('${endDate}')) STEP toIntervalHour(1)`;
+      break;
+    }
+    case 'day': {
+      dateSelect = 'toStartOfDay(first_seen_date) as date';
+      dateFill = `date ASC WITH FILL FROM toStartOfDay(toDateTime('${startDate}')) TO toStartOfDay(toDateTime('${endDate}')) STEP toIntervalDay(1)`;
+      break;
+    }
+    case 'week': {
+      dateSelect = `toStartOfWeek(first_seen_date, 1, '${timezone}') as date`;
+      dateFill = `date ASC WITH FILL FROM toStartOfWeek(toDateTime('${startDate}'), 1, '${timezone}') TO toStartOfWeek(toDateTime('${endDate}'), 1, '${timezone}') STEP toIntervalWeek(1)`;
+      break;
+    }
+    case 'month': {
+      dateSelect = `toStartOfMonth(first_seen_date, '${timezone}') as date`;
+      dateFill = `date ASC WITH FILL FROM toStartOfMonth(toDateTime('${startDate}'), '${timezone}') TO toStartOfMonth(toDateTime('${endDate}'), '${timezone}') STEP toIntervalMonth(1)`;
+      break;
+    }
+    default: {
+      dateSelect = 'toStartOfDay(first_seen_date) as date';
+      dateFill = `date ASC WITH FILL FROM toStartOfDay(toDateTime('${startDate}')) TO toStartOfDay(toDateTime('${endDate}')) STEP toIntervalDay(1)`;
+      break;
+    }
+  }
+
+  const breakdownSelectsForMain = breakdowns.length > 0 
+    ? breakdowns.map(b => b.name).join(', ') + ','
+    : '';
+
+  const breakdownGroupByForMain = breakdowns.length > 0 
+    ? ', ' + breakdowns.map(b => b.name).join(', ')
+    : '';
+
+  // Add event name as label for consistency with other chart types
+  const labelSelect = event.name === '*' ? "'*' as label_0" : `${escape(event.name)} as label_0`;
+
+  let sql = `
+    SELECT 
+      ${dateSelect},
+      ${labelSelect},
+      ${breakdownSelectsForMain}
+      count(*) as count
+    FROM (${firstSeenSubquery}) first_seen_data
+    WHERE first_seen_date >= toDateTime('${formatClickhouseDate(startDate)}')
+      AND first_seen_date <= toDateTime('${formatClickhouseDate(endDate)}')
+    GROUP BY date${breakdownGroupByForMain}
+    ORDER BY ${dateFill}
+  `;
+
+  // Handle breakdown limits
+  if (breakdowns.length > 0 && limit) {
+    const topBreakdownsSql = `
+      SELECT ${breakdowns.map(b => b.name).join(', ')}, sum(count) as total_count
+      FROM (${sql})
+      GROUP BY ${breakdowns.map(b => b.name).join(', ')}
+      ORDER BY total_count DESC
+      LIMIT ${limit}
+    `;
+
+    sql = `
+      SELECT *
+      FROM (${sql}) main_query
+      WHERE (${breakdowns.map(b => b.name).join(', ')}) IN (
+        SELECT ${breakdowns.map(b => b.name).join(', ')}
+        FROM (${topBreakdownsSql})
+      )
+      ORDER BY ${dateFill}
+    `;
+  }
+
+  console.log('First Seen SQL:');
+  console.log(sql);
+  console.log('-- End --');
+  return sql;
+}

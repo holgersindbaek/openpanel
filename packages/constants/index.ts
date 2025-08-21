@@ -110,6 +110,7 @@ export const chartTypes = {
   funnel: 'Funnel',
   retention: 'Retention',
   conversion: 'Conversion',
+  first_seen: 'First Seen',
 } as const;
 
 export const chartSegments = {

@@ -22,6 +22,7 @@ import {
   formatClickhouseDate,
   getChartSql,
   getEventFiltersWhereClause,
+  getFirstSeenSql,
   getOrganizationSubscriptionChartEndDate,
   getSettingsForProject,
 } from '@openpanel/db';
@@ -472,10 +473,12 @@ export async function getFunnelData({
 export async function getChartSerie(
   payload: IGetChartDataInput,
   timezone: string,
+  chartType?: string,
 ) {
   async function getSeries() {
+    const sqlFunction = chartType === 'first_seen' ? getFirstSeenSql : getChartSql;
     const result = await chQuery<ISerieDataItem>(
-      getChartSql({ ...payload, timezone }),
+      sqlFunction({ ...payload, timezone }),
       {
         session_timezone: timezone,
       },
@@ -483,7 +486,7 @@ export async function getChartSerie(
 
     if (result.length === 0 && payload.breakdowns.length > 0) {
       return await chQuery<ISerieDataItem>(
-        getChartSql({
+        sqlFunction({
           ...payload,
           breakdowns: [],
           timezone,
@@ -512,6 +515,7 @@ export type IGetChartSerie = Awaited<ReturnType<typeof getChartSeries>>[number];
 export async function getChartSeries(
   input: IChartInputWithDates,
   timezone: string,
+  chartType?: string,
 ) {
   const series = (
     await Promise.all(
@@ -522,6 +526,7 @@ export async function getChartSeries(
             event,
           },
           timezone,
+          chartType,
         ),
       ),
     )
@@ -548,7 +553,7 @@ export async function getChart(input: IChartInput) {
     currentPeriod.endDate = endDate;
   }
 
-  const promises = [getChartSeries({ ...input, ...currentPeriod }, timezone)];
+  const promises = [getChartSeries({ ...input, ...currentPeriod }, timezone, input.chartType)];
 
   if (input.previous) {
     promises.push(
@@ -558,6 +563,7 @@ export async function getChart(input: IChartInput) {
           ...previousPeriod,
         },
         timezone,
+        input.chartType,
       ),
     );
   }

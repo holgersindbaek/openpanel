@@ -26,6 +26,7 @@ export function getReport({
     - ${chartTypes.histogram}
     - ${chartTypes.metric}
     - ${chartTypes.bar}
+    - ${chartTypes.first_seen}
 `,
     parameters: zChartInputAI,
     execute: async (report) => {

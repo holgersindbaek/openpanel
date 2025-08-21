@@ -55,6 +55,8 @@ export const ReportChart = ({ lazy = true, ...props }: ReportChartProps) => {
         return <ReportRetentionChart />;
       case 'conversion':
         return <ReportConversionChart />;
+      case 'first_seen':
+        return <ReportLineChart />;
       default:
         return null;
     }
