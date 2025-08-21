@@ -30,6 +30,12 @@ export function transformPropertyKey(property: string) {
   return `${match}['${property.replace(new RegExp(`^${match}.`), '')}']`;
 }
 
+function isNumericProperty(property: string): boolean {
+  // List of known numeric fields in the events table
+  const numericFields = ['duration', 'created_at', 'timestamp'];
+  return numericFields.includes(property);
+}
+
 export function getSelectPropertyKey(property: string) {
   if (property === 'has_profile') {
     return `if(profile_id != device_id, 'true', 'false')`;
@@ -172,23 +178,43 @@ export function getChartSql({
   }
 
   if (event.segment === 'property_sum' && event.property) {
-    sb.select.count = `sum(toFloat64(${getSelectPropertyKey(event.property)})) as count`;
-    sb.where.property = `${getSelectPropertyKey(event.property)} IS NOT NULL AND notEmpty(${getSelectPropertyKey(event.property)})`;
+    const propertyKey = getSelectPropertyKey(event.property);
+    sb.select.count = `sum(toFloat64(${propertyKey})) as count`;
+    if (isNumericProperty(event.property)) {
+      sb.where.property = `${propertyKey} IS NOT NULL`;
+    } else {
+      sb.where.property = `${propertyKey} IS NOT NULL AND notEmpty(${propertyKey})`;
+    }
   }
 
   if (event.segment === 'property_average' && event.property) {
-    sb.select.count = `avg(toFloat64(${getSelectPropertyKey(event.property)})) as count`;
-    sb.where.property = `${getSelectPropertyKey(event.property)} IS NOT NULL AND notEmpty(${getSelectPropertyKey(event.property)})`;
+    const propertyKey = getSelectPropertyKey(event.property);
+    sb.select.count = `avg(toFloat64(${propertyKey})) as count`;
+    if (isNumericProperty(event.property)) {
+      sb.where.property = `${propertyKey} IS NOT NULL`;
+    } else {
+      sb.where.property = `${propertyKey} IS NOT NULL AND notEmpty(${propertyKey})`;
+    }
   }
 
   if (event.segment === 'property_max' && event.property) {
-    sb.select.count = `max(toFloat64(${getSelectPropertyKey(event.property)})) as count`;
-    sb.where.property = `${getSelectPropertyKey(event.property)} IS NOT NULL AND notEmpty(${getSelectPropertyKey(event.property)})`;
+    const propertyKey = getSelectPropertyKey(event.property);
+    sb.select.count = `max(toFloat64(${propertyKey})) as count`;
+    if (isNumericProperty(event.property)) {
+      sb.where.property = `${propertyKey} IS NOT NULL`;
+    } else {
+      sb.where.property = `${propertyKey} IS NOT NULL AND notEmpty(${propertyKey})`;
+    }
   }
 
   if (event.segment === 'property_min' && event.property) {
-    sb.select.count = `min(toFloat64(${getSelectPropertyKey(event.property)})) as count`;
-    sb.where.property = `${getSelectPropertyKey(event.property)} IS NOT NULL AND notEmpty(${getSelectPropertyKey(event.property)})`;
+    const propertyKey = getSelectPropertyKey(event.property);
+    sb.select.count = `min(toFloat64(${propertyKey})) as count`;
+    if (isNumericProperty(event.property)) {
+      sb.where.property = `${propertyKey} IS NOT NULL`;
+    } else {
+      sb.where.property = `${propertyKey} IS NOT NULL AND notEmpty(${propertyKey})`;
+    }
   }
 
   if (event.segment === 'one_event_per_user') {
