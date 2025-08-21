@@ -97,7 +97,18 @@ const startServer = async () => {
         }
 
         return callback(null, {
-          origin: '*',
+          origin: true, // Allow any origin
+          methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+          allowedHeaders: [
+            'Content-Type',
+            'Authorization', 
+            'X-Requested-With',
+            'openpanel-client-id',
+            'openpanel-client-secret',
+            'openpanel-sdk-name',
+            'openpanel-sdk-version'
+          ],
+          credentials: false,
         });
       };
     });
@@ -111,6 +122,14 @@ const startServer = async () => {
     fastify.addHook('onRequest', ipHook);
     fastify.addHook('onRequest', fixHook);
     fastify.addHook('onResponse', requestLoggingHook);
+
+    // Handle Private Network Access for Chrome
+    fastify.addHook('onSend', async (request, reply, payload) => {
+      if (request.headers['access-control-request-private-network'] === 'true') {
+        reply.header('Access-Control-Allow-Private-Network', 'true');
+      }
+      return payload;
+    });
 
     fastify.register(compress, {
       global: false,
