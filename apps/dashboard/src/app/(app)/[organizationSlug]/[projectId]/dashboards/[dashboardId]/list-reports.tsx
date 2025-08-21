@@ -75,11 +75,11 @@ export function ListReports({ reports, dashboard }: ListReportsProps) {
           </Button>
         </div>
       </div>
-      <div className="flex max-w-6xl flex-col gap-8">
+      <div className="grid gap-8 lg:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-3">
         {reports.map((report) => {
           const chartRange = report.range;
           return (
-            <div className="card" key={report.id}>
+            <div className="card h-fit" key={report.id}>
               <Link
                 href={`/${params.organizationId}/${params.projectId}/reports/${report.id}`}
                 className="flex items-center justify-between border-b border-border p-4 leading-none [&_svg]:hover:opacity-100"

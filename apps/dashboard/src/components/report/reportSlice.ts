@@ -70,6 +70,7 @@ export const reportSlice = createSlice({
       return {
         ...initialState,
         ready: true,
+        dirty: true, // New reports should start as dirty so they can be saved
       };
     },
     setReport(state, action: PayloadAction<IChartProps>) {

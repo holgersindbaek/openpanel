@@ -54,11 +54,11 @@ export function LayoutSidebar({
       <div
         className={cn(
           'fixed left-0 top-0 z-40 flex h-screen w-72 flex-col border-r border-border bg-card transition-transform',
-          '-translate-x-72 lg:-translate-x-0', // responsive
-          active && 'translate-x-0', // force active on mobile
+          '-translate-x-72', // always collapsed by default
+          active && 'translate-x-0', // show when active
         )}
       >
-        <div className="absolute -right-12 flex h-16 items-center lg:hidden">
+        <div className="absolute -right-12 flex h-16 items-center">
           <Button
             size="icon"
             onClick={() => setActive((p) => !p)}

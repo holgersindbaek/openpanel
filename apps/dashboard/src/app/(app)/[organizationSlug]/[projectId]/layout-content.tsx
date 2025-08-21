@@ -14,7 +14,7 @@ export default function LayoutContent({
 
   if (segments[0] && NOT_MIGRATED_PAGES.includes(segments[0])) {
     return (
-      <div className="pb-20 transition-all lg:pl-72 max-w-screen-2xl">
+      <div className="pb-20 transition-all max-w-screen-2xl">
         {children}
       </div>
     );
@@ -23,7 +23,7 @@ export default function LayoutContent({
   return (
     <div
       className={cn(
-        'pb-20 transition-all max-lg:mt-12 lg:pl-72 max-w-screen-2xl',
+        'pb-20 transition-all mt-12 max-w-screen-2xl',
         segments.includes('chat') && 'pb-0',
       )}
     >
