@@ -183,3 +183,9 @@ dist
 .DS_Store
 
 *.tsbuildinfo
+
+.nvmrc
+.python-version
+Caddyfile
+Caddyfile.template
+*.sql
