@@ -2,6 +2,7 @@ import {
   ActivityIcon,
   ClockIcon,
   EqualApproximatelyIcon,
+  EyeIcon,
   type LucideIcon,
   SigmaIcon,
   TrendingDownIcon,
@@ -48,6 +49,7 @@ export function ReportSegment({
     session: ClockIcon,
     user_average: UserCheck2Icon,
     one_event_per_user: UserCheckIcon,
+    first_seen: EyeIcon,
     property_sum: SigmaIcon,
     property_average: EqualApproximatelyIcon,
     property_max: TrendingUpIcon,
@@ -66,7 +68,7 @@ export function ReportSegment({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent className="w-56">
-        <DropdownMenuLabel>Available charts</DropdownMenuLabel>
+        <DropdownMenuLabel>Aggregation</DropdownMenuLabel>
         <DropdownMenuSeparator />
 
         <DropdownMenuGroup>

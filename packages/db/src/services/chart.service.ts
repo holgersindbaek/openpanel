@@ -177,6 +177,39 @@ export function getChartSql({
       'COUNT(*)::float / COUNT(DISTINCT profile_id)::float as count';
   }
 
+  if (event.segment === 'first_seen') {
+    // Count unique profiles where their first event of this type occurred in the selected time period
+    // We need a subquery to find each profile's first occurrence
+    const eventCondition = event.name !== '*' ? `AND name = ${escape(event.name)}` : '';
+    
+    // Use a subquery to get only first occurrences
+    sb.from = `(
+      SELECT e.*
+      FROM ${TABLE_NAMES.events} e
+      INNER JOIN (
+        SELECT profile_id, MIN(created_at) as first_created_at
+        FROM ${TABLE_NAMES.events}
+        WHERE project_id = ${escape(projectId)}
+          ${eventCondition}
+          AND profile_id IS NOT NULL
+          AND profile_id != ''
+        GROUP BY profile_id
+      ) first_events ON e.profile_id = first_events.profile_id 
+        AND e.created_at = first_events.first_created_at
+      WHERE e.project_id = ${escape(projectId)}
+        ${eventCondition}
+    ) as events`;
+    
+    sb.select.count = 'countDistinct(profile_id) as count';
+    sb.joins = {};
+    
+    const sql = `${getSelect()} ${getFrom()} ${getJoins()} ${getWhere()} ${getGroupBy()} ${getOrderBy()}`;
+    console.log('-- First Seen Report --');
+    console.log(sql.replaceAll(/[\n\r]/g, ' '));
+    console.log('-- End --');
+    return sql;
+  }
+
   if (event.segment === 'property_sum' && event.property) {
     const propertyKey = getSelectPropertyKey(event.property);
     sb.select.count = `sum(toFloat64(${propertyKey})) as count`;
