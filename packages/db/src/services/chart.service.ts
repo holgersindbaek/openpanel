@@ -264,6 +264,51 @@ export function getEventFiltersWhereClause(filters: IChartEventFilter[]) {
       return;
     }
 
+    // Handle duration filtering (convert seconds to milliseconds)
+    if (name === 'duration') {
+      switch (operator) {
+        case 'greaterThan': {
+          where[id] = `duration > ${Number(value[0]) * 1000}`;
+          break;
+        }
+        case 'greaterThanOrEqual': {
+          where[id] = `duration >= ${Number(value[0]) * 1000}`;
+          break;
+        }
+        case 'lessThan': {
+          where[id] = `duration < ${Number(value[0]) * 1000}`;
+          break;
+        }
+        case 'lessThanOrEqual': {
+          where[id] = `duration <= ${Number(value[0]) * 1000}`;
+          break;
+        }
+        case 'between': {
+          if (value.length >= 2) {
+            where[id] = `duration BETWEEN ${Number(value[0]) * 1000} AND ${Number(value[1]) * 1000}`;
+          }
+          break;
+        }
+        case 'is': {
+          where[id] = `duration = ${Number(value[0]) * 1000}`;
+          break;
+        }
+        case 'isNot': {
+          where[id] = `duration != ${Number(value[0]) * 1000}`;
+          break;
+        }
+        case 'isNull': {
+          where[id] = `duration IS NULL`;
+          break;
+        }
+        case 'isNotNull': {
+          where[id] = `duration IS NOT NULL`;
+          break;
+        }
+      }
+      return;
+    }
+
     if (
       name.startsWith('properties.') ||
       name.startsWith('profile.properties.')
@@ -460,6 +505,34 @@ export function getEventFiltersWhereClause(filters: IChartEventFilter[]) {
                 `match(${name}, ${escape(stripLeadingAndTrailingSlashes(String(val)).trim())})`,
             )
             .join(' OR ')})`;
+          break;
+        }
+        case 'greaterThan': {
+          // For other numeric fields (not duration)
+          const fieldName = getSelectPropertyKey(name);
+          where[id] = `toFloat64OrNull(${fieldName}) > ${Number(value[0])}`;
+          break;
+        }
+        case 'greaterThanOrEqual': {
+          const fieldName = getSelectPropertyKey(name);
+          where[id] = `toFloat64OrNull(${fieldName}) >= ${Number(value[0])}`;
+          break;
+        }
+        case 'lessThan': {
+          const fieldName = getSelectPropertyKey(name);
+          where[id] = `toFloat64OrNull(${fieldName}) < ${Number(value[0])}`;
+          break;
+        }
+        case 'lessThanOrEqual': {
+          const fieldName = getSelectPropertyKey(name);
+          where[id] = `toFloat64OrNull(${fieldName}) <= ${Number(value[0])}`;
+          break;
+        }
+        case 'between': {
+          if (value.length >= 2) {
+            const fieldName = getSelectPropertyKey(name);
+            where[id] = `toFloat64OrNull(${fieldName}) BETWEEN ${Number(value[0])} AND ${Number(value[1])}`;
+          }
           break;
         }
       }

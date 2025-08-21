@@ -92,6 +92,11 @@ export const operators = {
   regex: 'Regex',
   isNull: 'Is null',
   isNotNull: 'Is not null',
+  greaterThan: 'Greater than',
+  greaterThanOrEqual: 'Greater than or equal',
+  lessThan: 'Less than',
+  lessThanOrEqual: 'Less than or equal',
+  between: 'Between',
 } as const;
 
 export const chartTypes = {
