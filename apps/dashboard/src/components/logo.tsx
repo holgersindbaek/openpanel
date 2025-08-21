@@ -7,7 +7,7 @@ interface LogoProps {
 export function LogoSquare({ className }: LogoProps) {
   return (
     <img
-      src="/logotest.svg"
+      src="/logo.svg"
       className={cn('rounded-md', className)}
       alt="Openpanel logo"
     />
