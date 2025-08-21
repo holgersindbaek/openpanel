@@ -28,10 +28,16 @@ export function Chart({ data }: Props) {
   const [isOpen, setOpen] = useState<string | null>(null);
   const {
     isEditMode,
-    report: { metric, limit },
+    report: { metric, limit, unit, events },
     options: { onClick, dropdownMenuContent, columns },
   } = useReportChartContext();
   const number = useNumber();
+  
+  // Check if all events are using the same property for aggregation
+  const property = events && events.length > 0 && 
+    events.every((e) => e.property === events[0]?.property) 
+    ? events[0]?.property 
+    : undefined;
   const series = useMemo(
     () => (isEditMode ? data.series : data.series.slice(0, limit || 10)),
     [data, isEditMode, limit],
@@ -125,7 +131,7 @@ export function Chart({ data }: Props) {
                       %
                     </div>
                     <div className="font-bold">
-                      {number.format(serie.metrics.sum)}
+                      {number.formatWithUnit(serie.metrics.sum, unit, property)}
                     </div>
                   </div>
                 </div>

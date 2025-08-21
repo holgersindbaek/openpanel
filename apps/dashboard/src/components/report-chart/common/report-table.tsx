@@ -40,7 +40,15 @@ export function ReportTable({
   const number = useNumber();
   const interval = useSelector((state) => state.report.interval);
   const breakdowns = useSelector((state) => state.report.breakdowns);
+  const events = useSelector((state) => state.report.events);
+  const unit = useSelector((state) => state.report.unit);
   const formatDate = useFormatDateInterval(interval);
+  
+  // Check if all events are using the same property for aggregation
+  const property = events.length > 0 && 
+    events.every((e) => e.property === events[0]?.property) 
+    ? events[0]?.property 
+    : undefined;
 
   function handleChange(name: string, checked: boolean) {
     setVisibleSeries((prev) => {
@@ -54,13 +62,13 @@ export function ReportTable({
   return (
     <>
       <Stats className="my-4 grid grid-cols-1 @xl:grid-cols-3 @4xl:grid-cols-6">
-        <StatsCard title="Total" value={number.format(data.metrics.sum)} />
+        <StatsCard title="Total" value={number.formatWithUnit(data.metrics.sum, unit, property)} />
         <StatsCard
           title="Average"
-          value={number.format(data.metrics.average)}
+          value={number.formatWithUnit(data.metrics.average, unit, property)}
         />
-        <StatsCard title="Min" value={number.format(data.metrics.min)} />
-        <StatsCard title="Max" value={number.format(data.metrics.max)} />
+        <StatsCard title="Min" value={number.formatWithUnit(data.metrics.min, unit, property)} />
+        <StatsCard title="Max" value={number.formatWithUnit(data.metrics.max, unit, property)} />
       </Stats>
       <div className="grid grid-cols-[max(300px,30vw)_1fr] overflow-hidden rounded-md border border-border">
         <Table className="rounded-none border-b-0 border-l-0 border-t-0">
@@ -144,7 +152,7 @@ export function ReportTable({
                   <TableRow key={`${serie.id}-2`}>
                     <TableCell className="h-10">
                       <div className="flex items-center gap-2 font-medium">
-                        {number.format(serie.metrics.sum)}
+                        {number.formatWithUnit(serie.metrics.sum, unit, property)}
                         <PreviousDiffIndicator
                           {...serie.metrics.previous?.sum}
                         />
@@ -152,7 +160,7 @@ export function ReportTable({
                     </TableCell>
                     <TableCell className="h-10">
                       <div className="flex items-center gap-2 font-medium">
-                        {number.format(serie.metrics.average)}
+                        {number.formatWithUnit(serie.metrics.average, unit, property)}
                         <PreviousDiffIndicator
                           {...serie.metrics.previous?.average}
                         />

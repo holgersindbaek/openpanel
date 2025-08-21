@@ -1,6 +1,6 @@
 'use client';
 
-import { fancyMinutes, useNumber } from '@/hooks/useNumerFormatter';
+import { fancyMinutes, fancyDuration, useNumber } from '@/hooks/useNumerFormatter';
 import type { IChartData } from '@/trpc/client';
 import { cn } from '@/utils/cn';
 import AutoSizer from 'react-virtualized-auto-sizer';
@@ -20,6 +20,7 @@ interface MetricCardProps {
   color?: string;
   metric: IChartMetric;
   unit?: string;
+  property?: string;
 }
 
 export function MetricCard({
@@ -27,6 +28,7 @@ export function MetricCard({
   color: _color,
   metric,
   unit,
+  property,
 }: MetricCardProps) {
   const {
     report: { previousIndicatorInverted },
@@ -35,6 +37,11 @@ export function MetricCard({
   const number = useNumber();
 
   const renderValue = (value: number, unitClassName?: string) => {
+    // Auto-detect duration properties
+    if (property === 'duration' || unit === 'ms') {
+      return <>{fancyDuration(value)}</>;
+    }
+    
     if (unit === 'min') {
       return <>{fancyMinutes(value)}</>;
     }

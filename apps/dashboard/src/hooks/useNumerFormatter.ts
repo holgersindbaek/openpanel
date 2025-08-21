@@ -8,6 +8,21 @@ export function fancyMinutes(time: number) {
   return `${minutes}m ${seconds}s`;
 }
 
+export function fancyDuration(milliseconds: number) {
+  const totalSeconds = Math.floor(milliseconds / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  } else if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  } else {
+    return `${seconds}s`;
+  }
+}
+
 export const formatNumber =
   (locale: string) => (value: number | null | undefined) => {
     if (isNil(value)) {
@@ -59,9 +74,14 @@ export function useNumber() {
     formatWithUnit: (
       value: number | null | undefined,
       unit?: string | null,
+      property?: string | null,
     ) => {
       if (isNil(value)) {
         return 'N/A';
+      }
+      // Auto-detect duration properties
+      if (property === 'duration' || unit === 'ms') {
+        return fancyDuration(value);
       }
       if (unit === 'min') {
         return fancyMinutes(value);
