@@ -94,7 +94,9 @@ services:
       - .env
 
   op-dashboard:
-    image: lindesvard/openpanel-dashboard:latest
+    build:
+      context: ..
+      dockerfile: apps/dashboard/Dockerfile
     restart: always
     depends_on:
       op-api:
