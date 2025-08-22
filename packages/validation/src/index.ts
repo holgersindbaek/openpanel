@@ -93,7 +93,7 @@ export const zChartInput = z.object({
     .default([])
     .describe('Array of dimensions to break down the data by'),
   range: zRange
-    .default('60d')
+    .default('30d')
     .describe('The time range for which data should be displayed'),
   previous: z
     .boolean()
