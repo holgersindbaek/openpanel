@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 export type IVisibleSeries = ReturnType<typeof useVisibleSeries>['series'];
 export function useVisibleSeries(data: IChartData, limit?: number | undefined) {
-  const max = limit ?? 5;
+  const max = limit ?? 20;
   const [visibleSeries, setVisibleSeries] = useState<string[]>(
     data?.series?.slice(0, max).map((serie) => serie.id) ?? [],
   );
