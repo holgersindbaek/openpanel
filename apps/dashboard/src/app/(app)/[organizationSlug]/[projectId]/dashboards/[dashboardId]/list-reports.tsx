@@ -164,6 +164,7 @@ function SortableReportCard({
       <div className={cn('p-4', report.chartType === 'metric' && 'p-0')}>
         <ReportChart
           {...report}
+          lazy={false}
           report={{
             ...report,
             range: (range ?? report.range) as IChartRange,
