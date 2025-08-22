@@ -50,6 +50,7 @@ import {
   timeWindows,
 } from '@openpanel/constants';
 import type { IServiceDashboard, getReportsByDashboardId } from '@openpanel/db';
+import type { IChartRange, IInterval } from '@openpanel/validation';
 
 import { OverviewInterval } from '@/components/overview/overview-interval';
 import { OverviewRange } from '@/components/overview/overview-range';
@@ -131,7 +132,7 @@ function SortableReportCard({
                 <span>Custom dates</span>
               ) : (
                 range !== null &&
-                chartRange !== range && <span>{timeWindows[range].label}</span>
+                chartRange !== range && <span>{timeWindows[range as keyof typeof timeWindows].label}</span>
               )}
             </div>
           )}
@@ -165,10 +166,10 @@ function SortableReportCard({
           {...report}
           report={{
             ...report,
-            range: range ?? report.range,
+            range: (range ?? report.range) as IChartRange,
             startDate: startDate ?? report.startDate,
             endDate: endDate ?? report.endDate,
-            interval: interval ?? report.interval,
+            interval: (interval ?? report.interval) as IInterval,
           }}
         />
       </div>
