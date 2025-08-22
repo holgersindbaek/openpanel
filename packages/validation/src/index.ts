@@ -110,14 +110,18 @@ export const zChartInput = z.object({
     ),
   projectId: z.string().describe('The ID of the project this chart belongs to'),
   startDate: z
-    .string()
-    .nullish()
+    .preprocess(
+      (val) => (val === 'undefined' || val === undefined ? null : val),
+      z.string().nullish()
+    )
     .describe(
       'Custom start date for the data range (overrides range if provided)',
     ),
   endDate: z
-    .string()
-    .nullish()
+    .preprocess(
+      (val) => (val === 'undefined' || val === undefined ? null : val),
+      z.string().nullish()
+    )
     .describe(
       'Custom end date for the data range (overrides range if provided)',
     ),

@@ -1,6 +1,7 @@
 import { api } from '@/trpc/client';
 
 import { AspectContainer } from '../aspect-container';
+import { cleanReportForApi } from '../utils';
 import { ReportChartEmpty } from '../common/empty';
 import { ReportChartError } from '../common/error';
 import { ReportChartLoading } from '../common/loading';
@@ -10,7 +11,7 @@ import { Chart } from './chart';
 export function ReportMapChart() {
   const { isLazyLoading, report } = useReportChartContext();
 
-  const res = api.chart.chart.useQuery(report, {
+  const res = api.chart.chart.useQuery(cleanReportForApi(report), {
     keepPreviousData: true,
     staleTime: 1000 * 60 * 1,
     enabled: !isLazyLoading,

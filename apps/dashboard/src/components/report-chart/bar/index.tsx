@@ -4,12 +4,13 @@ import { AspectContainer } from '../aspect-container';
 import { ReportChartEmpty } from '../common/empty';
 import { ReportChartError } from '../common/error';
 import { useReportChartContext } from '../context';
+import { cleanReportForApi } from '../utils';
 import { Chart } from './chart';
 
 export function ReportBarChart() {
   const { isLazyLoading, report } = useReportChartContext();
 
-  const res = api.chart.chart.useQuery(report, {
+  const res = api.chart.chart.useQuery(cleanReportForApi(report), {
     keepPreviousData: true,
     staleTime: 1000 * 60 * 1,
     enabled: !isLazyLoading,

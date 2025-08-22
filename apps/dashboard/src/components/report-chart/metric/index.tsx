@@ -1,12 +1,13 @@
 import { api } from '@/trpc/client';
 
 import { useReportChartContext } from '../context';
+import { cleanReportForApi } from '../utils';
 import { Chart } from './chart';
 
 export function ReportMetricChart() {
   const { isLazyLoading, report } = useReportChartContext();
 
-  const res = api.chart.chart.useQuery(report, {
+  const res = api.chart.chart.useQuery(cleanReportForApi(report), {
     keepPreviousData: true,
     staleTime: 1000 * 60 * 1,
     enabled: !isLazyLoading,
