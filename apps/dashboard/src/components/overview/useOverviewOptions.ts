@@ -18,6 +18,14 @@ import { mapKeys } from '@openpanel/validation';
 
 const nuqsOptions = { history: 'push' } as const;
 
+// Helper function to clean null/undefined dates for API calls
+export function cleanDatesForApi(startDate: string | null, endDate: string | null) {
+  return {
+    ...(startDate && { startDate }),
+    ...(endDate && { endDate }),
+  };
+}
+
 export function useOverviewOptions() {
   const [startDate, setStartDate] = useQueryState(
     'start',

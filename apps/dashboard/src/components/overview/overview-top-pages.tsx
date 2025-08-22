@@ -19,7 +19,7 @@ import {
   OverviewWidgetTableLoading,
   OverviewWidgetTablePages,
 } from './overview-widget-table';
-import { useOverviewOptions } from './useOverviewOptions';
+import { useOverviewOptions, cleanDatesForApi } from './useOverviewOptions';
 import { useOverviewWidgetV2 } from './useOverviewWidget';
 
 interface OverviewTopPagesProps {
@@ -68,8 +68,7 @@ export default function OverviewTopPages({ projectId }: OverviewTopPagesProps) {
   const query = api.overview.topPages.useQuery({
     projectId,
     filters,
-    startDate,
-    endDate,
+    ...cleanDatesForApi(startDate, endDate),
     mode: widget.key,
     range,
     interval,

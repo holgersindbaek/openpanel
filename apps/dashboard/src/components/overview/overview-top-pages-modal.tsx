@@ -7,7 +7,7 @@ import { api } from '@/trpc/client';
 import { Button } from '../ui/button';
 import { ScrollArea } from '../ui/scroll-area';
 import { OverviewWidgetTablePages } from './overview-widget-table';
-import { useOverviewOptions } from './useOverviewOptions';
+import { useOverviewOptions, cleanDatesForApi } from './useOverviewOptions';
 
 interface OverviewTopPagesProps {
   projectId: string;
@@ -30,8 +30,7 @@ export default function OverviewTopPagesModal({
     {
       projectId,
       filters,
-      startDate,
-      endDate,
+      ...cleanDatesForApi(startDate, endDate),
       mode: 'page',
       range,
       interval: 'day',

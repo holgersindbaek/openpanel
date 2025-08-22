@@ -1,6 +1,6 @@
 'use client';
 
-import { useOverviewOptions } from '@/components/overview/useOverviewOptions';
+import { useOverviewOptions, cleanDatesForApi } from '@/components/overview/useOverviewOptions';
 import { useEventQueryFilters } from '@/hooks/useEventQueryFilters';
 import { cn } from '@/utils/cn';
 
@@ -84,8 +84,7 @@ export default function OverviewMetrics({ projectId }: OverviewMetricsProps) {
     range,
     interval,
     filters,
-    startDate,
-    endDate,
+    ...cleanDatesForApi(startDate, endDate),
   });
 
   const data =

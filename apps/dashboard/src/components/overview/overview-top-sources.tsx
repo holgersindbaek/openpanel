@@ -15,7 +15,7 @@ import {
   OverviewWidgetTableGeneric,
   OverviewWidgetTableLoading,
 } from './overview-widget-table';
-import { useOverviewOptions } from './useOverviewOptions';
+import { useOverviewOptions, cleanDatesForApi } from './useOverviewOptions';
 import { useOverviewWidgetV2 } from './useOverviewWidget';
 
 interface OverviewTopSourcesProps {
@@ -67,8 +67,7 @@ export default function OverviewTopSources({
     range,
     filters,
     column: widget.key,
-    startDate,
-    endDate,
+    ...cleanDatesForApi(startDate, endDate),
   });
 
   return (

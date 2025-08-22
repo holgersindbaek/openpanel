@@ -16,7 +16,7 @@ import {
   OVERVIEW_COLUMNS_NAME_PLURAL,
 } from './overview-constants';
 import { OverviewWidgetTableGeneric } from './overview-widget-table';
-import { useOverviewOptions } from './useOverviewOptions';
+import { useOverviewOptions, cleanDatesForApi } from './useOverviewOptions';
 
 interface OverviewTopGenericModalProps {
   projectId: string;
@@ -33,8 +33,7 @@ export default function OverviewTopGenericModal({
     {
       projectId,
       filters,
-      startDate,
-      endDate,
+      ...cleanDatesForApi(startDate, endDate),
       range,
       interval,
       limit: 50,

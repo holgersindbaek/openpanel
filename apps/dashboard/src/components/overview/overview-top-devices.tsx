@@ -19,7 +19,7 @@ import {
   OverviewWidgetTableGeneric,
   OverviewWidgetTableLoading,
 } from './overview-widget-table';
-import { useOverviewOptions } from './useOverviewOptions';
+import { useOverviewOptions, cleanDatesForApi } from './useOverviewOptions';
 import { useOverviewWidget } from './useOverviewWidget';
 
 interface OverviewTopDevicesProps {
@@ -44,8 +44,7 @@ export default function OverviewTopDevices({
         report: {
           limit: 10,
           projectId,
-          startDate,
-          endDate,
+          ...cleanDatesForApi(startDate, endDate),
           events: [
             {
               segment: 'user',
@@ -80,8 +79,7 @@ export default function OverviewTopDevices({
         report: {
           limit: 10,
           projectId,
-          startDate,
-          endDate,
+          ...cleanDatesForApi(startDate, endDate),
           events: [
             {
               segment: 'user',
@@ -119,8 +117,7 @@ export default function OverviewTopDevices({
         report: {
           limit: 10,
           projectId,
-          startDate,
-          endDate,
+          ...cleanDatesForApi(startDate, endDate),
           events: [
             {
               segment: 'user',
@@ -159,8 +156,7 @@ export default function OverviewTopDevices({
         report: {
           limit: 10,
           projectId,
-          startDate,
-          endDate,
+          ...cleanDatesForApi(startDate, endDate),
           events: [
             {
               segment: 'user',
@@ -198,8 +194,7 @@ export default function OverviewTopDevices({
         report: {
           limit: 10,
           projectId,
-          startDate,
-          endDate,
+          ...cleanDatesForApi(startDate, endDate),
           events: [
             {
               segment: 'user',
@@ -238,8 +233,7 @@ export default function OverviewTopDevices({
         report: {
           limit: 10,
           projectId,
-          startDate,
-          endDate,
+          ...cleanDatesForApi(startDate, endDate),
           events: [
             {
               segment: 'user',
@@ -277,8 +271,7 @@ export default function OverviewTopDevices({
         report: {
           limit: 10,
           projectId,
-          startDate,
-          endDate,
+          ...cleanDatesForApi(startDate, endDate),
           events: [
             {
               segment: 'user',
