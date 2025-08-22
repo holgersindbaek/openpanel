@@ -7,3 +7,15 @@ services:
       args:
         DATABASE_URL: "postgresql://postgres:postgres@op-db:5432/postgres?schema=public"
         NEXT_PUBLIC_SELF_HOSTED: "true"
+  
+  op-api:
+    image: op-api-local
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+  
+  op-worker:
+    image: op-worker-local
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
