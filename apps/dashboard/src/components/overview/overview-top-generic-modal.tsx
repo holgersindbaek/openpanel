@@ -16,7 +16,7 @@ import {
   OVERVIEW_COLUMNS_NAME_PLURAL,
 } from './overview-constants';
 import { OverviewWidgetTableGeneric } from './overview-widget-table';
-import { useOverviewOptions, cleanDatesForApi } from './useOverviewOptions';
+import { cleanDatesForApi, useOverviewOptions } from './useOverviewOptions';
 
 interface OverviewTopGenericModalProps {
   projectId: string;

@@ -19,7 +19,7 @@ import {
   OverviewWidgetTableGeneric,
   OverviewWidgetTableLoading,
 } from './overview-widget-table';
-import { useOverviewOptions, cleanDatesForApi } from './useOverviewOptions';
+import { cleanDatesForApi, useOverviewOptions } from './useOverviewOptions';
 import { useOverviewWidget } from './useOverviewWidget';
 
 interface OverviewTopDevicesProps {

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { db } from '@openpanel/db';
+import { db, updateReportOrder } from '@openpanel/db';
 import { zReportInput } from '@openpanel/validation';
 
 import { getProjectAccess } from '../access';
@@ -124,5 +124,31 @@ export const reportRouter = createTRPCRouter({
           id: reportId,
         },
       });
+    }),
+  updateOrder: protectedProcedure
+    .input(
+      z.object({
+        dashboardId: z.string(),
+        reportIds: z.array(z.string()),
+      }),
+    )
+    .mutation(async ({ input: { dashboardId, reportIds }, ctx }) => {
+      // Verify user has access to the dashboard
+      const dashboard = await db.dashboard.findUniqueOrThrow({
+        where: {
+          id: dashboardId,
+        },
+      });
+
+      const access = await getProjectAccess({
+        userId: ctx.session.userId,
+        projectId: dashboard.projectId,
+      });
+
+      if (!access) {
+        throw TRPCAccessError('You do not have access to this project');
+      }
+
+      return updateReportOrder(dashboardId, reportIds);
     }),
 });

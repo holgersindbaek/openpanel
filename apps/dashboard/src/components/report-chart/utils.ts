@@ -6,7 +6,7 @@ import type { IChartProps } from '@openpanel/validation';
  */
 export function cleanReportForApi(report: IChartProps): IChartProps {
   const cleanedReport = { ...report };
-  
+
   // Remove undefined dates
   if (cleanedReport.startDate === undefined) {
     delete cleanedReport.startDate;
@@ -14,6 +14,6 @@ export function cleanReportForApi(report: IChartProps): IChartProps {
   if (cleanedReport.endDate === undefined) {
     delete cleanedReport.endDate;
   }
-  
+
   return cleanedReport;
 }

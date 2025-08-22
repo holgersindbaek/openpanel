@@ -123,10 +123,20 @@ export function ReportChartTooltip({
                   </div>
                   <div className="flex justify-between gap-8 font-mono font-medium">
                     <div className="row gap-1">
-                      {number.formatWithUnit(data.count, unit, data.event.property)}
+                      {number.formatWithUnit(
+                        data.count,
+                        unit,
+                        data.event.property,
+                      )}
                       {!!data.previous && (
                         <span className="text-muted-foreground">
-                          ({number.formatWithUnit(data.previous.value, unit, data.event.property)})
+                          (
+                          {number.formatWithUnit(
+                            data.previous.value,
+                            unit,
+                            data.event.property,
+                          )}
+                          )
                         </span>
                       )}
                     </div>

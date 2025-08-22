@@ -69,8 +69,9 @@ export function withFormula(
           const eventIndex = events.findIndex(
             (event) => event.id === serie.event.id,
           );
-          const readableId = alphabetIds[eventIndex >= 0 ? eventIndex : serieIndex];
-          
+          const readableId =
+            alphabetIds[eventIndex >= 0 ? eventIndex : serieIndex];
+
           if (!readableId) {
             throw new Error('no alphabet id for serie in withFormula');
           }

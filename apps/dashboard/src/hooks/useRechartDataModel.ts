@@ -8,8 +8,8 @@ export type IRechartPayloadItem = {
   id: string;
   names: string[];
   color: string;
-  event: { 
-    id?: string; 
+  event: {
+    id?: string;
     name: string;
     property?: string;
     segment?: string;

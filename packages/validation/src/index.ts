@@ -112,7 +112,7 @@ export const zChartInput = z.object({
   startDate: z
     .preprocess(
       (val) => (val === 'undefined' || val === undefined ? null : val),
-      z.string().nullish()
+      z.string().nullish(),
     )
     .describe(
       'Custom start date for the data range (overrides range if provided)',
@@ -120,7 +120,7 @@ export const zChartInput = z.object({
   endDate: z
     .preprocess(
       (val) => (val === 'undefined' || val === undefined ? null : val),
-      z.string().nullish()
+      z.string().nullish(),
     )
     .describe(
       'Custom end date for the data range (overrides range if provided)',

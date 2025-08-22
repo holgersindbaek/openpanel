@@ -13,7 +13,7 @@ export function fancyDuration(milliseconds: number) {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  
+
   if (hours > 0) {
     return `${hours}h ${minutes}m ${seconds}s`;
   } else if (minutes > 0) {
@@ -79,8 +79,8 @@ export function useNumber() {
       if (isNil(value)) {
         return 'N/A';
       }
-      // Auto-detect duration properties
-      if (property === 'duration' || unit === 'ms') {
+      // Legacy support for explicit ms unit
+      if (unit === 'ms') {
         return fancyDuration(value);
       }
       if (unit === 'min') {

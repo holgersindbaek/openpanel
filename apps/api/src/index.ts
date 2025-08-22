@@ -101,12 +101,12 @@ const startServer = async () => {
           methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
           allowedHeaders: [
             'Content-Type',
-            'Authorization', 
+            'Authorization',
             'X-Requested-With',
             'openpanel-client-id',
             'openpanel-client-secret',
             'openpanel-sdk-name',
-            'openpanel-sdk-version'
+            'openpanel-sdk-version',
           ],
           credentials: false,
         });
@@ -125,7 +125,9 @@ const startServer = async () => {
 
     // Handle Private Network Access for Chrome
     fastify.addHook('onSend', async (request, reply, payload) => {
-      if (request.headers['access-control-request-private-network'] === 'true') {
+      if (
+        request.headers['access-control-request-private-network'] === 'true'
+      ) {
         reply.header('Access-Control-Allow-Private-Network', 'true');
       }
       return payload;

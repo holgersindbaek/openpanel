@@ -1,11 +1,11 @@
 import { api } from '@/trpc/client';
 
 import { AspectContainer } from '../aspect-container';
-import { cleanReportForApi } from '../utils';
 import { ReportChartEmpty } from '../common/empty';
 import { ReportChartError } from '../common/error';
 import { ReportChartLoading } from '../common/loading';
 import { useReportChartContext } from '../context';
+import { cleanReportForApi } from '../utils';
 import { Chart } from './chart';
 
 export function ReportAreaChart() {

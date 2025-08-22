@@ -83,10 +83,15 @@ export function FilterItem({ filter, event }: FilterProps) {
         filters: event.filters.map((item) => {
           if (item.id === id) {
             // Keep both values for 'between', otherwise keep only first value
-            const newValue = operator === 'between' 
-              ? item.value ? item.value.filter(Boolean).slice(0, 2) : []
-              : item.value ? item.value.filter(Boolean).slice(0, 1) : [];
-            
+            const newValue =
+              operator === 'between'
+                ? item.value
+                  ? item.value.filter(Boolean).slice(0, 2)
+                  : []
+                : item.value
+                  ? item.value.filter(Boolean).slice(0, 1)
+                  : [];
+
             return {
               ...item,
               value: newValue,
@@ -190,7 +195,7 @@ export function PureFilterItem({
               type="number"
               onChangeValue={(value) => {
                 const newValue = [value, filter.value[1] || ''];
-                changeFilterValue(newValue.filter(v => v !== ''));
+                changeFilterValue(newValue.filter((v) => v !== ''));
               }}
             />
             <InputEnter
@@ -199,13 +204,13 @@ export function PureFilterItem({
               type="number"
               onChangeValue={(value) => {
                 const newValue = [filter.value[0] || '', value];
-                changeFilterValue(newValue.filter(v => v !== ''));
+                changeFilterValue(newValue.filter((v) => v !== ''));
               }}
             />
           </div>
-        ) : filter.operator === 'greaterThan' || 
-          filter.operator === 'greaterThanOrEqual' || 
-          filter.operator === 'lessThan' || 
+        ) : filter.operator === 'greaterThan' ||
+          filter.operator === 'greaterThanOrEqual' ||
+          filter.operator === 'lessThan' ||
           filter.operator === 'lessThanOrEqual' ? (
           <InputEnter
             value={filter.value[0] ? String(filter.value[0]) : ''}

@@ -1,6 +1,9 @@
 'use client';
 
-import { useOverviewOptions, cleanDatesForApi } from '@/components/overview/useOverviewOptions';
+import {
+  cleanDatesForApi,
+  useOverviewOptions,
+} from '@/components/overview/useOverviewOptions';
 import { useEventQueryFilters } from '@/hooks/useEventQueryFilters';
 import { cn } from '@/utils/cn';
 

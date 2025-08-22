@@ -17,12 +17,14 @@ export function Chart({ data }: Props) {
     report: { metric, unit, events },
   } = useReportChartContext();
   const { series } = useVisibleSeries(data, isEditMode ? 20 : 4);
-  
+
   // Check if all events are using the same property for aggregation
-  const property = events && events.length > 0 && 
-    events.every((e) => e.property === events[0]?.property) 
-    ? events[0]?.property 
-    : undefined;
+  const property =
+    events &&
+    events.length > 0 &&
+    events.every((e) => e.property === events[0]?.property)
+      ? events[0]?.property
+      : undefined;
   return (
     <div
       className={cn(

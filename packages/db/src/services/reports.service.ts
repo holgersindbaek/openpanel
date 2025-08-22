@@ -77,8 +77,25 @@ export function getReportsByDashboardId(dashboardId: string) {
       where: {
         dashboardId,
       },
+      orderBy: {
+        position: 'asc',
+      },
     })
     .then((reports) => reports.map(transformReport));
+}
+
+export async function updateReportOrder(
+  dashboardId: string,
+  reportIds: string[],
+) {
+  const updates = reportIds.map((id, index) =>
+    db.report.update({
+      where: { id },
+      data: { position: index },
+    }),
+  );
+
+  return db.$transaction(updates);
 }
 
 export async function getReportById(id: string) {

@@ -21,7 +21,7 @@ import {
   OverviewWidgetTableGeneric,
   OverviewWidgetTableLoading,
 } from './overview-widget-table';
-import { useOverviewOptions, cleanDatesForApi } from './useOverviewOptions';
+import { cleanDatesForApi, useOverviewOptions } from './useOverviewOptions';
 import { useOverviewWidgetV2 } from './useOverviewWidget';
 
 interface OverviewTopGeoProps {

@@ -10,7 +10,7 @@ import type { IChartType } from '@openpanel/validation';
 import { Widget, WidgetBody } from '../../widget';
 import { OverviewChartToggle } from '../overview-chart-toggle';
 import { WidgetButtons, WidgetFooter, WidgetHead } from '../overview-widget';
-import { useOverviewOptions, cleanDatesForApi } from '../useOverviewOptions';
+import { cleanDatesForApi, useOverviewOptions } from '../useOverviewOptions';
 import { useOverviewWidget } from '../useOverviewWidget';
 
 export interface OverviewTopEventsProps {

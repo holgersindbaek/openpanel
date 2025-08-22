@@ -180,8 +180,9 @@ export function getChartSql({
   if (event.segment === 'first_seen') {
     // Count unique profiles where their first event of this type occurred in the selected time period
     // We need a subquery to find each profile's first occurrence
-    const eventCondition = event.name !== '*' ? `AND name = ${escape(event.name)}` : '';
-    
+    const eventCondition =
+      event.name !== '*' ? `AND name = ${escape(event.name)}` : '';
+
     // Use a subquery to get only first occurrences
     sb.from = `(
       SELECT e.*
@@ -199,10 +200,10 @@ export function getChartSql({
       WHERE e.project_id = ${escape(projectId)}
         ${eventCondition}
     ) as events`;
-    
+
     sb.select.count = 'countDistinct(profile_id) as count';
     sb.joins = {};
-    
+
     const sql = `${getSelect()} ${getFrom()} ${getJoins()} ${getWhere()} ${getGroupBy()} ${getOrderBy()}`;
     console.log('-- First Seen Report --');
     console.log(sql.replaceAll(/[\n\r]/g, ' '));
@@ -212,7 +213,12 @@ export function getChartSql({
 
   if (event.segment === 'property_sum' && event.property) {
     const propertyKey = getSelectPropertyKey(event.property);
-    sb.select.count = `sum(toFloat64(${propertyKey})) as count`;
+    // Convert duration from milliseconds to seconds
+    const selectExpression =
+      event.property === 'duration'
+        ? `sum(toFloat64(${propertyKey}) / 1000)`
+        : `sum(toFloat64(${propertyKey}))`;
+    sb.select.count = `${selectExpression} as count`;
     if (isNumericProperty(event.property)) {
       sb.where.property = `${propertyKey} IS NOT NULL`;
     } else {
@@ -222,7 +228,12 @@ export function getChartSql({
 
   if (event.segment === 'property_average' && event.property) {
     const propertyKey = getSelectPropertyKey(event.property);
-    sb.select.count = `avg(toFloat64(${propertyKey})) as count`;
+    // Convert duration from milliseconds to seconds
+    const selectExpression =
+      event.property === 'duration'
+        ? `avg(toFloat64(${propertyKey}) / 1000)`
+        : `avg(toFloat64(${propertyKey}))`;
+    sb.select.count = `${selectExpression} as count`;
     if (isNumericProperty(event.property)) {
       sb.where.property = `${propertyKey} IS NOT NULL`;
     } else {
@@ -232,7 +243,12 @@ export function getChartSql({
 
   if (event.segment === 'property_max' && event.property) {
     const propertyKey = getSelectPropertyKey(event.property);
-    sb.select.count = `max(toFloat64(${propertyKey})) as count`;
+    // Convert duration from milliseconds to seconds
+    const selectExpression =
+      event.property === 'duration'
+        ? `max(toFloat64(${propertyKey}) / 1000)`
+        : `max(toFloat64(${propertyKey}))`;
+    sb.select.count = `${selectExpression} as count`;
     if (isNumericProperty(event.property)) {
       sb.where.property = `${propertyKey} IS NOT NULL`;
     } else {
@@ -242,7 +258,12 @@ export function getChartSql({
 
   if (event.segment === 'property_min' && event.property) {
     const propertyKey = getSelectPropertyKey(event.property);
-    sb.select.count = `min(toFloat64(${propertyKey})) as count`;
+    // Convert duration from milliseconds to seconds
+    const selectExpression =
+      event.property === 'duration'
+        ? `min(toFloat64(${propertyKey}) / 1000)`
+        : `min(toFloat64(${propertyKey}))`;
+    sb.select.count = `${selectExpression} as count`;
     if (isNumericProperty(event.property)) {
       sb.where.property = `${propertyKey} IS NOT NULL`;
     } else {
@@ -318,7 +339,8 @@ export function getEventFiltersWhereClause(filters: IChartEventFilter[]) {
         }
         case 'between': {
           if (value.length >= 2) {
-            where[id] = `duration BETWEEN ${Number(value[0]) * 1000} AND ${Number(value[1]) * 1000}`;
+            where[id] =
+              `duration BETWEEN ${Number(value[0]) * 1000} AND ${Number(value[1]) * 1000}`;
           }
           break;
         }
@@ -564,7 +586,8 @@ export function getEventFiltersWhereClause(filters: IChartEventFilter[]) {
         case 'between': {
           if (value.length >= 2) {
             const fieldName = getSelectPropertyKey(name);
-            where[id] = `toFloat64OrNull(${fieldName}) BETWEEN ${Number(value[0])} AND ${Number(value[1])}`;
+            where[id] =
+              `toFloat64OrNull(${fieldName}) BETWEEN ${Number(value[0])} AND ${Number(value[1])}`;
           }
           break;
         }
