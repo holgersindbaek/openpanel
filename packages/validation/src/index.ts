@@ -242,6 +242,12 @@ export const zReportInput = z.object({
     .boolean()
     .default(false)
     .describe('Whether to show data from the previous period for comparison'),
+  includeTotalCount: z
+    .boolean()
+    .optional()
+    .describe(
+      'Whether the chart query should include the unique-profile total count',
+    ),
   formula: z
     .string()
     .optional()

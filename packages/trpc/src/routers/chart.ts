@@ -582,6 +582,7 @@ export const chartRouter = createTRPCRouter({
             startDate: input.startDate ?? ctx.report.startDate,
             endDate: input.endDate ?? ctx.report.endDate,
             interval: input.interval ?? ctx.report.interval,
+            includeTotalCount: input.includeTotalCount,
           }
         : input;
 
@@ -606,6 +607,7 @@ export const chartRouter = createTRPCRouter({
             startDate: input.startDate ?? ctx.report.startDate,
             endDate: input.endDate ?? ctx.report.endDate,
             interval: input.interval ?? ctx.report.interval,
+            includeTotalCount: input.includeTotalCount,
           }
         : input;
 

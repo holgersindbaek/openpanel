@@ -51,6 +51,7 @@ export async function fetch(plan: Plan): Promise<ConcreteSeries[]> {
           chartType: plan.input.chartType,
           metric: plan.input.metric,
           previous: plan.input.previous ?? false,
+          includeTotalCount: plan.input.includeTotalCount,
           limit: plan.input.limit,
           offset: plan.input.offset,
         };

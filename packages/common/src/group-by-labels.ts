@@ -22,13 +22,14 @@ interface GroupedResult {
 export function groupByLabels(data: ISerieDataItem[]): GroupedResult[] {
   const groupedMap = new Map<string, GroupedResult>();
   const timestamps = new Set<string>();
+
   data.forEach((row) => {
     timestamps.add(row.date);
     const labels = Object.keys(row)
       .filter((key) => key.startsWith('label_'))
       .sort((a, b) => {
-        const numA = Number.parseInt(a.replace('label_', ''));
-        const numB = Number.parseInt(b.replace('label_', ''));
+        const numA = Number.parseInt(a.replace('label_', ''), 10);
+        const numB = Number.parseInt(b.replace('label_', ''), 10);
         return numA - numB;
       })
       .map((key) => (row as any)[key])
@@ -57,17 +58,21 @@ export function groupByLabels(data: ISerieDataItem[]): GroupedResult[] {
       (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
     ),
   }));
+  const sortedTimestamps = Array.from(timestamps).sort(
+    (a, b) => new Date(a).getTime() - new Date(b).getTime(),
+  );
 
   return result
     .filter((group) => group.name.length > 0)
     .map((group) => {
+      const dataByDate = new Map(group.data.map((item) => [item.date, item]));
+
       return {
         ...group,
         // This will ensure that all dates are present in the data array
-        data: Array.from(timestamps).map((date) => {
-          const dataPoint = group.data.find((dp) => dp.date === date);
-          return dataPoint || { date, count: 0, total_count: 0 };
-        }),
+        data: sortedTimestamps.map(
+          (date) => dataByDate.get(date) || { date, count: 0, total_count: 0 },
+        ),
       };
     });
 }

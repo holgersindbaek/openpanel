@@ -111,6 +111,16 @@ const EVENT_ROW_COLUMNS = [
   'imported_at',
 ] as const;
 
+function logChartQuery(label: string, sql: string) {
+  if (process.env.DEBUG_CHART_SQL !== 'true') {
+    return;
+  }
+
+  console.log(`-- ${label} --`);
+  console.log(sql.replaceAll(/[\n\r]/g, ' '));
+  console.log('-- End --');
+}
+
 // Normalize an incoming field name into its canonical form. Returns a string
 // suitable for `getSelectPropertyKey` / `getEventFiltersWhereClause` — i.e.
 // either a top-level column name (`referrer_name`), a `properties.foo` /
@@ -436,6 +446,7 @@ export async function getChartSql({
   endDate,
   projectId,
   timezone,
+  includeTotalCount,
 }: IGetChartDataInput & { timezone: string }) {
   const {
     sb,
@@ -773,9 +784,7 @@ export async function getChartSql({
     sb.where = {};
 
     const sql = `${getWith()}${getSelect()} ${getFrom()} ${getJoins()} ${getWhere()} ${getGroupBy()} ${getOrderBy()} ${getFill()}`;
-    console.log('-- Report --');
-    console.log(sql.replaceAll(/[\n\r]/g, ' '));
-    console.log('-- End --');
+    logChartQuery('Report', sql);
     return sql;
   }
 
@@ -792,76 +801,76 @@ export async function getChartSql({
     ? `INNER JOIN (${buildAllCohortsMembershipQuery(projectId)}) AS _all_cohorts ON _all_cohorts.profile_id = e.profile_id `
     : '';
 
-  if (breakdowns.length > 0) {
-    // Pre-compute unique counts per breakdown group in a CTE, then JOIN it.
-    // We can't use a correlated subquery because:
-    // 1. ClickHouse expands label_X aliases to their underlying expressions,
-    //    which resolve in the subquery's scope, making the condition a tautology.
-    // 2. Correlated subqueries aren't supported on distributed/remote tables.
-    const ucSelectParts: string[] = breakdowns.map((breakdown, index) => {
-      if (isAllCohortsBreakdown(breakdown.name)) {
-        return `${buildAllCohortsLabelExpr(allCohorts)} as _uc_label_${index + 1}`;
-      }
-      const bId = extractCohortId(breakdown.name);
-      const bName = bId ? cohortMetadata.get(bId)?.name : undefined;
-      const propertyKey = getSelectPropertyKey(
-        breakdown.name,
-        projectId,
-        bId ?? undefined,
-        bName,
-        'e'
-      );
-      return `${propertyKey} as _uc_label_${index + 1}`;
-    });
-    ucSelectParts.push('uniq(profile_id) as total_count');
-
-    const ucGroupByParts = breakdowns.map(
-      (_, index) => `_uc_label_${index + 1}`
-    );
-
-    const ucWhere = getWhereWithoutBar();
-
-    addCte(
-      '_uc',
-      `SELECT ${ucSelectParts.join(', ')} FROM ${TABLE_NAMES.events} e ${subqueryGroupJoins}${profilesJoinRef ? `${profilesJoinRef} ` : ''}${inlineCohortJoinsSql ? `${inlineCohortJoinsSql} ` : ''}${inlineAllCohortsJoin}${ucWhere} GROUP BY ${ucGroupByParts.join(', ')}`
-    );
-
-    const ucJoinConditions = breakdowns
-      .map((b, index) => {
-        if (isAllCohortsBreakdown(b.name)) {
-          return `_uc._uc_label_${index + 1} = ${buildAllCohortsLabelExpr(allCohorts)}`;
+  if (includeTotalCount) {
+    if (breakdowns.length > 0) {
+      // Pre-compute unique counts per breakdown group in a CTE, then JOIN it.
+      // We can't use a correlated subquery because:
+      // 1. ClickHouse expands label_X aliases to their underlying expressions,
+      //    which resolve in the subquery's scope, making the condition a tautology.
+      // 2. Correlated subqueries aren't supported on distributed/remote tables.
+      const ucSelectParts: string[] = breakdowns.map((breakdown, index) => {
+        if (isAllCohortsBreakdown(breakdown.name)) {
+          return `${buildAllCohortsLabelExpr(allCohorts)} as _uc_label_${index + 1}`;
         }
-        const bId = extractCohortId(b.name);
+        const bId = extractCohortId(breakdown.name);
         const bName = bId ? cohortMetadata.get(bId)?.name : undefined;
         const propertyKey = getSelectPropertyKey(
-          b.name,
+          breakdown.name,
           projectId,
           bId ?? undefined,
           bName,
           'e'
         );
-        return `_uc._uc_label_${index + 1} = ${propertyKey}`;
-      })
-      .join(' AND ');
+        return `${propertyKey} as _uc_label_${index + 1}`;
+      });
+      ucSelectParts.push('uniq(profile_id) as total_count');
 
-    sb.joins.unique_counts = `LEFT ANY JOIN _uc ON ${ucJoinConditions}`;
-    sb.select.total_unique_count = 'any(_uc.total_count) as total_count';
-  } else {
-    const ucWhere = getWhereWithoutBar();
+      const ucGroupByParts = breakdowns.map(
+        (_, index) => `_uc_label_${index + 1}`
+      );
 
-    addCte(
-      '_uc',
-      `SELECT uniq(profile_id) as total_count FROM ${TABLE_NAMES.events} e ${subqueryGroupJoins}${profilesJoinRef ? `${profilesJoinRef} ` : ''}${inlineCohortJoinsSql ? `${inlineCohortJoinsSql} ` : ''}${ucWhere}`
-    );
+      const ucWhere = getWhereWithoutBar();
 
-    sb.select.total_unique_count =
-      '(SELECT total_count FROM _uc) as total_count';
+      addCte(
+        '_uc',
+        `SELECT ${ucSelectParts.join(', ')} FROM ${TABLE_NAMES.events} e ${subqueryGroupJoins}${profilesJoinRef ? `${profilesJoinRef} ` : ''}${inlineCohortJoinsSql ? `${inlineCohortJoinsSql} ` : ''}${inlineAllCohortsJoin}${ucWhere} GROUP BY ${ucGroupByParts.join(', ')}`
+      );
+
+      const ucJoinConditions = breakdowns
+        .map((b, index) => {
+          if (isAllCohortsBreakdown(b.name)) {
+            return `_uc._uc_label_${index + 1} = ${buildAllCohortsLabelExpr(allCohorts)}`;
+          }
+          const bId = extractCohortId(b.name);
+          const bName = bId ? cohortMetadata.get(bId)?.name : undefined;
+          const propertyKey = getSelectPropertyKey(
+            b.name,
+            projectId,
+            bId ?? undefined,
+            bName,
+            'e'
+          );
+          return `_uc._uc_label_${index + 1} = ${propertyKey}`;
+        })
+        .join(' AND ');
+
+      sb.joins.unique_counts = `LEFT ANY JOIN _uc ON ${ucJoinConditions}`;
+      sb.select.total_unique_count = 'any(_uc.total_count) as total_count';
+    } else {
+      const ucWhere = getWhereWithoutBar();
+
+      addCte(
+        '_uc',
+        `SELECT uniq(profile_id) as total_count FROM ${TABLE_NAMES.events} e ${subqueryGroupJoins}${profilesJoinRef ? `${profilesJoinRef} ` : ''}${inlineCohortJoinsSql ? `${inlineCohortJoinsSql} ` : ''}${ucWhere}`
+      );
+
+      sb.select.total_unique_count =
+        '(SELECT total_count FROM _uc) as total_count';
+    }
   }
 
   const sql = `${getWith()}${getSelect()} ${getFrom()} ${getJoins()} ${getWhere()} ${getGroupBy()} ${getOrderBy()} ${getFill()}`;
-  console.log('-- Report --');
-  console.log(sql.replaceAll(/[\n\r]/g, ' '));
-  console.log('-- End --');
+  logChartQuery('Report', sql);
   return sql;
 }
 
@@ -872,6 +881,7 @@ export async function getAggregateChartSql({
   endDate,
   projectId,
   limit,
+  includeTotalCount,
 }: Omit<IGetChartDataInput, 'interval' | 'chartType'> & {
   timezone: string;
 }) {
@@ -1085,6 +1095,9 @@ export async function getAggregateChartSql({
 
   // Default count aggregation
   sb.select.count = 'count(*) as count';
+  if (includeTotalCount) {
+    sb.select.total_unique_count = 'uniq(profile_id) as total_count';
+  }
 
   // Handle different segments
   if (event.segment === 'user') {
@@ -1145,9 +1158,7 @@ export async function getAggregateChartSql({
     sb.joins = {};
 
     const sql = getSql();
-    console.log('-- Aggregate Chart --');
-    console.log(sql.replaceAll(/[\n\r]/g, ' '));
-    console.log('-- End --');
+    logChartQuery('Aggregate Chart', sql);
     return sql;
   }
 
@@ -1160,9 +1171,7 @@ export async function getAggregateChartSql({
   }
 
   const sql = getSql();
-  console.log('-- Aggregate Chart --');
-  console.log(sql.replaceAll(/[\n\r]/g, ' '));
-  console.log('-- End --');
+  logChartQuery('Aggregate Chart', sql);
   return sql;
 }
 

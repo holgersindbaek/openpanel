@@ -192,6 +192,7 @@ async function fetchAggregateSeries({
         limit: input.limit,
         metric: input.metric,
         previous: input.previous,
+        includeTotalCount: input.includeTotalCount,
         timezone,
       };
 

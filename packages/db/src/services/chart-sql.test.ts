@@ -77,6 +77,38 @@ const itCH = (name: string, fn: () => Promise<void>) =>
   });
 
 describe('chart.service / getChartSql', () => {
+  it('omits unique total count work by default', async () => {
+    const sql = await getChartSql({
+      event: event(),
+      breakdowns: [],
+      interval: 'day',
+      startDate: START,
+      endDate: END,
+      projectId: PROJECT_ID,
+      timezone: 'UTC',
+    });
+
+    expect(sql).not.toContain('_uc');
+    expect(sql).not.toContain('total_count');
+  });
+
+  it('includes unique total count work when requested', async () => {
+    const sql = await getChartSql({
+      event: event(),
+      breakdowns: [breakdown('country')],
+      interval: 'day',
+      startDate: START,
+      endDate: END,
+      projectId: PROJECT_ID,
+      timezone: 'UTC',
+      includeTotalCount: true,
+    });
+
+    expect(sql).toContain('_uc');
+    expect(sql).toContain('uniq(profile_id) as total_count');
+    expect(sql).toContain('any(_uc.total_count) as total_count');
+  });
+
   itCH(
     'qualifies properties[...] with `e.` when group join is present (fixes AMBIGUOUS_IDENTIFIER)',
     async () => {
@@ -341,6 +373,33 @@ describe('chart.service / getChartSql', () => {
 });
 
 describe('chart.service / getAggregateChartSql', () => {
+  it('omits unique total count by default', async () => {
+    const sql = await getAggregateChartSql({
+      event: event(),
+      breakdowns: [],
+      startDate: START,
+      endDate: END,
+      projectId: PROJECT_ID,
+      timezone: 'UTC',
+    });
+
+    expect(sql).not.toContain('total_count');
+  });
+
+  it('includes unique total count when requested', async () => {
+    const sql = await getAggregateChartSql({
+      event: event(),
+      breakdowns: [],
+      startDate: START,
+      endDate: END,
+      projectId: PROJECT_ID,
+      timezone: 'UTC',
+      includeTotalCount: true,
+    });
+
+    expect(sql).toContain('uniq(profile_id) as total_count');
+  });
+
   itCH('drops all-cohorts breakdown on empty cohort project', async () => {
     const sql = await getAggregateChartSql({
       event: event({ segment: 'user' }),

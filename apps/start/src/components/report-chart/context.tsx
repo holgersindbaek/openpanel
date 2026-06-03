@@ -1,8 +1,7 @@
+import type { IChartSerie, IReportInput } from '@openpanel/validation';
 import isEqual from 'lodash.isequal';
 import type { LucideIcon } from 'lucide-react';
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
-
-import type { IChartSerie, IReportInput } from '@openpanel/validation';
 
 export type ReportChartContextType = {
   options: Partial<{
@@ -56,11 +55,14 @@ export const useReportChartContext = () => {
  * fields (like visibleSeries) that shouldn't affect the query cache key.
  */
 export const useChartInput = () => {
-  const { report } = useReportChartContext();
+  const { report, isEditMode } = useReportChartContext();
   return useMemo(() => {
     const { visibleSeries, ...input } = report;
-    return input;
-  }, [report]);
+    return {
+      ...input,
+      includeTotalCount: isEditMode || input.metric === 'count',
+    };
+  }, [report, isEditMode]);
 };
 
 export const ReportChartProvider = ({
