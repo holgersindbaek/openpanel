@@ -55,9 +55,17 @@ interface ReportQuerySlot {
   release: () => void;
 }
 
+interface ReportQueueEntry {
+  id: string;
+  priority: number;
+  sequence: number;
+}
+
 const reportQueryQueue = (() => {
   let activeId: string | null = null;
-  const queuedIds: string[] = [];
+  let sequence = 0;
+  let promoteTimer: ReturnType<typeof setTimeout> | null = null;
+  const queuedEntries: ReportQueueEntry[] = [];
   const listeners = new Set<() => void>();
 
   const emit = () => {
@@ -66,10 +74,46 @@ const reportQueryQueue = (() => {
     }
   };
 
+  const sortQueuedEntries = () => {
+    queuedEntries.sort((a, b) => {
+      if (a.priority !== b.priority) {
+        return a.priority - b.priority;
+      }
+      return a.sequence - b.sequence;
+    });
+  };
+
   const promote = () => {
-    if (!activeId) {
-      activeId = queuedIds.shift() ?? null;
+    if (!activeId && queuedEntries.length > 0) {
+      sortQueuedEntries();
+      activeId = queuedEntries.shift()?.id ?? null;
     }
+  };
+
+  const schedulePromote = () => {
+    if (promoteTimer) {
+      return;
+    }
+
+    promoteTimer = setTimeout(() => {
+      promoteTimer = null;
+      const previousActiveId = activeId;
+      promote();
+
+      if (activeId !== previousActiveId) {
+        emit();
+      }
+    }, 0);
+  };
+
+  const removeQueuedEntry = (id: string) => {
+    const queueIndex = queuedEntries.findIndex((item) => item.id === id);
+    if (queueIndex === -1) {
+      return false;
+    }
+
+    queuedEntries.splice(queueIndex, 1);
+    return true;
   };
 
   return {
@@ -80,18 +124,23 @@ const reportQueryQueue = (() => {
         listeners.delete(listener);
       };
     },
-    request: (id: string) => {
-      if (activeId === id || queuedIds.includes(id)) {
+    request: (id: string, priority: number) => {
+      if (activeId === id) {
         return;
       }
 
-      queuedIds.push(id);
-      const previousActiveId = activeId;
-      promote();
-
-      if (activeId !== previousActiveId || activeId === id) {
-        emit();
+      const existingEntry = queuedEntries.find((item) => item.id === id);
+      if (existingEntry) {
+        existingEntry.priority = priority;
+      } else {
+        queuedEntries.push({
+          id,
+          priority,
+          sequence: sequence++,
+        });
       }
+
+      schedulePromote();
     },
     release: (id: string) => {
       const previousActiveId = activeId;
@@ -102,9 +151,7 @@ const reportQueryQueue = (() => {
         changed = true;
       }
 
-      const queueIndex = queuedIds.indexOf(id);
-      if (queueIndex !== -1) {
-        queuedIds.splice(queueIndex, 1);
+      if (removeQueuedEntry(id)) {
         changed = true;
       }
 
@@ -116,6 +163,18 @@ const reportQueryQueue = (() => {
     },
   };
 })();
+
+function getReportQueuePriority(report: IReportInput & { id?: string }) {
+  const layout = (
+    report as IReportInput & {
+      layout?: { x?: number | null; y?: number | null };
+    }
+  ).layout;
+  const y = typeof layout?.y === 'number' ? layout.y : Number.MAX_SAFE_INTEGER;
+  const x = typeof layout?.x === 'number' ? layout.x : Number.MAX_SAFE_INTEGER;
+
+  return y * 1000 + x;
+}
 
 function stringifyReportQueryKey(key: unknown) {
   try {
@@ -139,7 +198,9 @@ export const useReportQueryQueue = (
   enabled: boolean,
   queryKey: unknown
 ): ReportQuerySlot => {
+  const { report } = useReportChartContext();
   const id = useId();
+  const priority = getReportQueuePriority(report);
   const stableQueryKey = useMemo(
     () => stringifyReportQueryKey(queryKey),
     [queryKey]
@@ -157,12 +218,12 @@ export const useReportQueryQueue = (
       return;
     }
 
-    reportQueryQueue.request(id);
+    reportQueryQueue.request(id, priority);
 
     return () => {
       reportQueryQueue.release(id);
     };
-  }, [enabled, id, stableQueryKey]);
+  }, [enabled, id, priority, stableQueryKey]);
 
   const release = useCallback(() => {
     reportQueryQueue.release(id);

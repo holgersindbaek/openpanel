@@ -1,0 +1,16 @@
+#!/bin/bash
+
+set -euo pipefail
+
+file=${1:-"report-debug-$(date +%Y%m%d-%H%M%S).log"}
+enabled=$(docker compose exec -T op-api sh -lc 'printf "%s" "${REPORT_DEBUG_LOGS:-false}"' 2>/dev/null || true)
+
+if [ "$enabled" != "true" ]; then
+  echo "REPORT_DEBUG_LOGS is '$enabled' in op-api. Enable it in .env and recreate op-api to see report debug logs." >&2
+fi
+
+echo "Writing report debug logs to $file" >&2
+
+docker compose logs -f --tail="${TAIL:-0}" op-api 2>&1 \
+  | grep --line-buffered '"event":"report\.' \
+  | tee "$file"
