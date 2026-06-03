@@ -1,12 +1,10 @@
 /** biome-ignore-all lint/style/useDefaultSwitchClause: switch cases are exhaustive by design */
 import { stripLeadingAndTrailingSlashes } from '@openpanel/common';
 import {
-  type CohortDefinition,
   getCohortIds,
   type IChartBreakdown,
   type IChartEventFilter,
   type IGetChartDataInput,
-  type IReportInput,
 } from '@openpanel/validation';
 import sqlstring from 'sqlstring';
 import { formatClickhouseDate, TABLE_NAMES } from '../clickhouse/client';
@@ -110,6 +108,8 @@ const EVENT_ROW_COLUMNS = [
   'model',
   'imported_at',
 ] as const;
+type EventRowColumn = (typeof EVENT_ROW_COLUMNS)[number];
+const EVENT_ROW_COLUMN_SET = new Set<string>(EVENT_ROW_COLUMNS);
 
 function logChartQuery(label: string, sql: string) {
   if (process.env.DEBUG_CHART_SQL !== 'true') {
@@ -142,22 +142,38 @@ export function normalizeEventField(name: string): string {
 // cohort breakdown, or `has_profile`. Used to drop unknown filters/breakdowns
 // instead of emitting invalid `SELECT cohort` / `SELECT temple_name` queries.
 export function isKnownEventField(name: string): boolean {
-  if (name === 'has_profile') return true;
-  if (isAllCohortsBreakdown(name)) return true;
-  if (extractCohortId(name)) return true;
-  if (name.startsWith('properties.')) return true;
-  if (name.startsWith('profile.')) return true;
-  if (name.startsWith('group.')) return true;
+  if (name === 'has_profile') {
+    return true;
+  }
+  if (isAllCohortsBreakdown(name)) {
+    return true;
+  }
+  if (extractCohortId(name)) {
+    return true;
+  }
+  if (name.startsWith('properties.')) {
+    return true;
+  }
+  if (name.startsWith('profile.')) {
+    return true;
+  }
+  if (name.startsWith('group.')) {
+    return true;
+  }
   const normalized = normalizeEventField(name);
-  if (normalized.startsWith('properties.')) return true;
-  if (EVENT_TOP_LEVEL_COLUMNS.has(normalized)) return true;
+  if (normalized.startsWith('properties.')) {
+    return true;
+  }
+  if (EVENT_TOP_LEVEL_COLUMNS.has(normalized)) {
+    return true;
+  }
   return false;
 }
 
-export type CohortMetadata = {
+export interface CohortMetadata {
   id: string;
   name: string;
-};
+}
 
 export async function fetchCohortsMetadata(
   cohortIds: string[]
@@ -263,13 +279,19 @@ export function collectBreakdownCohortIds(
   return Array.from(ids);
 }
 
-function getFirstSeenFromSql(projectId: string, eventName: string) {
+function getFirstSeenFromSql(
+  projectId: string,
+  eventName: string,
+  columns: readonly EventRowColumn[] = EVENT_ROW_COLUMNS
+) {
   const eventCondition =
     eventName !== '*' ? `AND name = ${sqlstring.escape(eventName)}` : '';
-  const firstEventTuple = `tuple(${EVENT_ROW_COLUMNS.join(', ')})`;
-  const firstEventSelect = EVENT_ROW_COLUMNS.map(
-    (column, index) => `tupleElement(first_event, ${index + 1}) AS ${column}`
-  ).join(',\n');
+  const firstEventTuple = `tuple(${columns.join(', ')})`;
+  const firstEventSelect = columns
+    .map(
+      (column, index) => `tupleElement(first_event, ${index + 1}) AS ${column}`
+    )
+    .join(',\n');
 
   return `(
     SELECT ${firstEventSelect}
@@ -283,6 +305,65 @@ function getFirstSeenFromSql(projectId: string, eventName: string) {
       GROUP BY profile_id
     )
   ) e`;
+}
+
+function getFirstSeenColumns(
+  event: IGetChartDataInput['event'],
+  breakdowns: IChartBreakdown[]
+): EventRowColumn[] {
+  const columns = new Set<EventRowColumn>(['profile_id', 'created_at']);
+
+  // Concrete first_seen events are filtered inside getFirstSeenFromSql, so the
+  // outer query only needs name when wildcard reports select/break down by it.
+  if (event.name === '*') {
+    columns.add('name');
+  }
+
+  const addFieldColumns = (field: string) => {
+    const name = normalizeEventField(field);
+
+    if (name === 'has_profile') {
+      columns.add('profile_id');
+      columns.add('device_id');
+      return;
+    }
+
+    if (name.startsWith('properties.')) {
+      columns.add('properties');
+      return;
+    }
+
+    if (name.startsWith('group.')) {
+      columns.add('groups');
+      return;
+    }
+
+    if (
+      name.startsWith('profile.') ||
+      name.startsWith('cohort:') ||
+      isAllCohortsBreakdown(name)
+    ) {
+      return;
+    }
+
+    if (EVENT_ROW_COLUMN_SET.has(name)) {
+      columns.add(name as EventRowColumn);
+    }
+  };
+
+  for (const filter of event.filters) {
+    addFieldColumns(filter.name);
+  }
+
+  for (const breakdown of breakdowns) {
+    addFieldColumns(breakdown.name);
+  }
+
+  if (event.property) {
+    addFieldColumns(event.property);
+  }
+
+  return EVENT_ROW_COLUMNS.filter((column) => columns.has(column));
 }
 
 export function transformPropertyKey(property: string) {
@@ -509,7 +590,9 @@ export async function getChartSql({
 
   if (event.name !== '*') {
     sb.select.label_0 = `${sqlstring.escape(event.name)} as label_0`;
-    sb.where.eventName = `e.name = ${sqlstring.escape(event.name)}`;
+    if (event.segment !== 'first_seen') {
+      sb.where.eventName = `e.name = ${sqlstring.escape(event.name)}`;
+    }
   } else {
     sb.select.label_0 = `'*' as label_0`;
   }
@@ -739,7 +822,11 @@ export async function getChartSql({
   }
 
   if (event.segment === 'first_seen') {
-    sb.from = getFirstSeenFromSql(projectId, event.name);
+    sb.from = getFirstSeenFromSql(
+      projectId,
+      event.name,
+      getFirstSeenColumns(event, breakdowns)
+    );
     sb.select.count = 'countDistinct(profile_id) as count';
   }
 
@@ -931,7 +1018,9 @@ export async function getAggregateChartSql({
 
   if (event.name !== '*') {
     sb.select.label_0 = `${sqlstring.escape(event.name)} as label_0`;
-    sb.where.eventName = `e.name = ${sqlstring.escape(event.name)}`;
+    if (event.segment !== 'first_seen') {
+      sb.where.eventName = `e.name = ${sqlstring.escape(event.name)}`;
+    }
   } else {
     sb.select.label_0 = `'*' as label_0`;
   }
@@ -1118,7 +1207,11 @@ export async function getAggregateChartSql({
   }
 
   if (event.segment === 'first_seen') {
-    sb.from = getFirstSeenFromSql(projectId, event.name);
+    sb.from = getFirstSeenFromSql(
+      projectId,
+      event.name,
+      getFirstSeenColumns(event, breakdowns)
+    );
     sb.select.count = 'countDistinct(profile_id) as count';
   }
 
@@ -1221,7 +1314,9 @@ export function getEventFiltersWhereClause(
       // path (getSelectPropertyKey) still uses a JOIN alias for SELECT
       // expressions, but filters never depend on it.
       const cohortIds = getCohortIds(filter);
-      if (cohortIds.length === 0) return;
+      if (cohortIds.length === 0) {
+        return;
+      }
       const profileIdExpr = eventsAlias
         ? `${eventsAlias}.profile_id`
         : 'profile_id';

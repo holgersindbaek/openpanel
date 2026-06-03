@@ -284,8 +284,43 @@ describe('chart.service / getChartSql', () => {
     });
 
     expect(sql).toContain('argMin(tuple(');
+    expect(sql.replace(/\s+/g, ' ')).toContain(
+      'argMin(tuple(profile_id, created_at), created_at)'
+    );
+    expect(sql).not.toContain('tupleElement(first_event, 3)');
+    expect(sql).not.toContain('e.name =');
+    expect(sql).not.toMatch(
+      /tupleElement\(first_event,\s+\d+\)\s+AS\s+properties/
+    );
+    expect(sql).not.toMatch(
+      /tupleElement\(first_event,\s+\d+\)\s+AS\s+country/
+    );
     expect(sql).not.toContain('first_created_at');
     expect(sql).not.toContain('INNER JOIN');
+  });
+
+  it('first_seen segment keeps only columns required by filters and breakdowns', async () => {
+    const sql = await getChartSql({
+      event: event({
+        segment: 'first_seen',
+        filters: [{ name: 'properties.plan', operator: 'is', value: ['pro'] }],
+      }),
+      breakdowns: [breakdown('country')],
+      interval: 'day',
+      startDate: START,
+      endDate: END,
+      projectId: PROJECT_ID,
+      timezone: 'UTC',
+    });
+
+    expect(sql.replace(/\s+/g, ' ')).toContain(
+      'argMin(tuple(profile_id, properties, created_at, country), created_at)'
+    );
+    expect(sql).toMatch(/tupleElement\(first_event,\s+2\)\s+AS\s+properties/);
+    expect(sql).toMatch(/tupleElement\(first_event,\s+4\)\s+AS\s+country/);
+    expect(sql).not.toContain('e.name =');
+    expect(sql).not.toMatch(/tupleElement\(first_event,\s+\d+\)\s+AS\s+city/);
+    expect(sql).not.toMatch(/tupleElement\(first_event,\s+\d+\)\s+AS\s+path/);
   });
 
   // Regressions from HyperDX 2026-05-14 → 2026-05-17 ClickHouse error log.

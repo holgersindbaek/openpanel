@@ -14,7 +14,7 @@ export function compute(
     type: 'event' | 'formula';
     id?: string;
     formula?: string;
-  }>,
+  }>
 ): ConcreteSeries[] {
   const results: ConcreteSeries[] = [...fetchedSeries];
 
@@ -28,10 +28,23 @@ export function compute(
     if (!formula.formula) {
       return;
     }
+    const compiledFormula = (() => {
+      try {
+        return mathjs.parse(formula.formula).compile();
+      } catch {
+        return null;
+      }
+    })();
+    const previousDefinitions = definitions.slice(0, formulaIndex);
 
     // Group ALL series (events + previously computed formulas) by breakdown signature
     // Series with the same breakdown values should be computed together
     const seriesByBreakdown = new Map<string, ConcreteSeries[]>();
+    const formulaSeriesByBreakdown = new Map<string, ConcreteSeries>();
+    const dataByDateCache = new Map<
+      ConcreteSeries,
+      Map<string, ConcreteSeries['data'][number]>
+    >();
 
     // Include both fetched event series AND previously computed formulas
     const allSeries = [
@@ -50,7 +63,23 @@ export function compute(
         seriesByBreakdown.set(breakdownSignature, []);
       }
       seriesByBreakdown.get(breakdownSignature)!.push(serie);
+
+      if ('type' in serie.definition && serie.definition.type === 'formula') {
+        formulaSeriesByBreakdown.set(
+          `${serie.definitionIndex}:${breakdownSignature}`,
+          serie
+        );
+      }
     });
+
+    const getDataByDate = (serie: ConcreteSeries) => {
+      let byDate = dataByDateCache.get(serie);
+      if (!byDate) {
+        byDate = new Map(serie.data.map((item) => [item.date, item]));
+        dataByDateCache.set(serie, byDate);
+      }
+      return byDate;
+    };
 
     // Compute formula for each breakdown group
     for (const [breakdownSignature, breakdownSeries] of seriesByBreakdown) {
@@ -69,13 +98,13 @@ export function compute(
       });
 
       const sortedDates = Array.from(allDates).sort(
-        (a, b) => new Date(a).getTime() - new Date(b).getTime(),
+        (a, b) => new Date(a).getTime() - new Date(b).getTime()
       );
 
       // Calculate total_count for the formula using the same formula applied to input series' total_count values
       // total_count is constant across all dates for a breakdown group, so compute it once
       const totalCountScope: Record<string, number> = {};
-      definitions.slice(0, formulaIndex).forEach((depDef, depIndex) => {
+      previousDefinitions.forEach((_depDef, depIndex) => {
         const readableId = alphabetIds[depIndex];
         if (!readableId) {
           return;
@@ -86,21 +115,17 @@ export function compute(
         if (depSeries) {
           // Get total_count from any data point (it's the same for all dates)
           const totalCount = depSeries.data.find(
-            (d) => d.total_count != null,
+            (d) => d.total_count != null
           )?.total_count;
           totalCountScope[readableId] = totalCount ?? 0;
         } else {
-          // Could be a formula from a previous breakdown group - find it in results
-          const formulaSerie = results.find(
-            (s) =>
-              s.definitionIndex === depIndex &&
-              'type' in s.definition &&
-              s.definition.type === 'formula' &&
-              s.name.slice(1).join(':::') === breakdownSignature,
+          // Could be a formula from a previous breakdown group.
+          const formulaSerie = formulaSeriesByBreakdown.get(
+            `${depIndex}:${breakdownSignature}`
           );
           if (formulaSerie) {
             const totalCount = formulaSerie.data.find(
-              (d) => d.total_count != null,
+              (d) => d.total_count != null
             )?.total_count;
             totalCountScope[readableId] = totalCount ?? 0;
           } else {
@@ -112,15 +137,12 @@ export function compute(
       // Evaluate formula for total_count
       let formulaTotalCount: number | undefined;
       try {
-        const result = mathjs
-          .parse(formula.formula)
-          .compile()
-          .evaluate(totalCountScope) as number;
+        const result = compiledFormula?.evaluate(totalCountScope) as number;
         formulaTotalCount =
           Number.isNaN(result) || !Number.isFinite(result)
             ? undefined
             : round(result, 2);
-      } catch (error) {
+      } catch (_error) {
         formulaTotalCount = undefined;
       }
 
@@ -129,7 +151,7 @@ export function compute(
         const scope: Record<string, number> = {};
 
         // Build scope using alphabet IDs (A, B, C, etc.)
-        definitions.slice(0, formulaIndex).forEach((depDef, depIndex) => {
+        previousDefinitions.forEach((_depDef, depIndex) => {
           const readableId = alphabetIds[depIndex];
           if (!readableId) {
             return;
@@ -138,20 +160,15 @@ export function compute(
           // Find the series for this dependency in the current breakdown group
           const depSeries = seriesByIndex.get(depIndex);
           if (depSeries) {
-            const dataPoint = depSeries.data.find((d) => d.date === date);
+            const dataPoint = getDataByDate(depSeries).get(date);
             scope[readableId] = dataPoint?.count ?? 0;
           } else {
-            // Could be a formula from a previous breakdown group - find it in results
-            // Match by definitionIndex AND breakdown signature
-            const formulaSerie = results.find(
-              (s) =>
-                s.definitionIndex === depIndex &&
-                'type' in s.definition &&
-                s.definition.type === 'formula' &&
-                s.name.slice(1).join(':::') === breakdownSignature,
+            // Could be a formula from a previous breakdown group.
+            const formulaSerie = formulaSeriesByBreakdown.get(
+              `${depIndex}:${breakdownSignature}`
             );
             if (formulaSerie) {
-              const dataPoint = formulaSerie.data.find((d) => d.date === date);
+              const dataPoint = getDataByDate(formulaSerie).get(date);
               scope[readableId] = dataPoint?.count ?? 0;
             } else {
               scope[readableId] = 0;
@@ -162,11 +179,8 @@ export function compute(
         // Evaluate formula
         let count: number;
         try {
-          count = mathjs
-            .parse(formula.formula)
-            .compile()
-            .evaluate(scope) as number;
-        } catch (error) {
+          count = compiledFormula?.evaluate(scope) as number;
+        } catch (_error) {
           count = 0;
         }
 
