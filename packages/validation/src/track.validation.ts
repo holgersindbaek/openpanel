@@ -134,12 +134,18 @@ export const zTrackPayload = z
     }
   ) satisfies z.ZodType<ITrackPayload>;
 
+const nullToUndefined = <T extends z.ZodType>(schema: T) =>
+  z.preprocess(
+    (value) => (value === null ? undefined : value),
+    schema.optional()
+  );
+
 export const zIdentifyPayload = z.object({
   profileId: zProfileId,
-  firstName: z.string().optional(),
-  lastName: z.string().optional(),
-  email: z.string().email().optional(),
-  avatar: z.string().url().optional(),
+  firstName: nullToUndefined(z.string()),
+  lastName: nullToUndefined(z.string()),
+  email: nullToUndefined(z.string().email()),
+  avatar: nullToUndefined(z.string().url()),
   properties: z.record(z.string(), z.unknown()).optional(),
 }) satisfies z.ZodType<IIdentifyPayload>;
 
