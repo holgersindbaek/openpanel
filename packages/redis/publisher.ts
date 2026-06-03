@@ -1,6 +1,6 @@
 import { type Redis, getRedisPub, getRedisSub } from './redis';
 
-import type { IServiceEvent, Notification } from '@openpanel/db';
+import type { IServiceEvent, Notification, Prisma } from '@openpanel/db';
 import { getSuperJson, setSuperJson } from '@openpanel/json';
 
 export type IPublishChannels = {
@@ -10,11 +10,10 @@ export type IPublishChannels = {
     };
   };
   events: {
-    received: IServiceEvent;
-    saved: IServiceEvent;
+    batch: { projectId: string; count: number };
   };
   notification: {
-    created: Notification;
+    created: Prisma.NotificationUncheckedCreateInput;
   };
 };
 

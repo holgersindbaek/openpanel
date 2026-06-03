@@ -1,26 +1,27 @@
-import { getClientIp } from '@/utils/get-client-ip';
-import type { FastifyReply, FastifyRequest } from 'fastify';
-
-import { generateDeviceId } from '@openpanel/common/server';
+import { generateId } from '@openpanel/common';
+import { parseUserAgent } from '@openpanel/common/server';
 import { getSalts } from '@openpanel/db';
-import { eventsQueue } from '@openpanel/queue';
-import { getLock } from '@openpanel/redis';
-import type { PostEventPayload } from '@openpanel/sdk';
-
-import { checkDuplicatedEvent } from '@/utils/deduplicate';
 import { getGeoLocation } from '@openpanel/geo';
+import { getEventsGroupQueueShard } from '@openpanel/queue';
+import type { DeprecatedPostEventPayload } from '@openpanel/validation';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import { getStringHeaders, getTimestamp } from './track.controller';
+import { getDeviceId } from '@/utils/ids';
 
 export async function postEvent(
   request: FastifyRequest<{
-    Body: PostEventPayload;
+    Body: DeprecatedPostEventPayload;
   }>,
-  reply: FastifyReply,
+  reply: FastifyReply
 ) {
-  const timestamp = getTimestamp(request.timestamp, request.body);
-  const ip = getClientIp(request)!;
-  const ua = request.headers['user-agent']!;
+  const { timestamp, isTimestampFromThePast } = getTimestamp(
+    request.timestamp,
+    request.body
+  );
+  const ip = request.clientIp;
+  const ua = request.headers['user-agent'] ?? 'unknown/1.0';
   const projectId = request.client?.projectId;
+  const headers = getStringHeaders(request.headers);
 
   if (!projectId) {
     reply.status(400).send('missing origin');
@@ -28,59 +29,34 @@ export async function postEvent(
   }
 
   const [salts, geo] = await Promise.all([getSalts(), getGeoLocation(ip)]);
-  const currentDeviceId = generateDeviceId({
-    salt: salts.current,
-    origin: projectId,
+  const { deviceId, sessionId } = await getDeviceId({
+    projectId,
     ip,
     ua,
-  });
-  const previousDeviceId = generateDeviceId({
-    salt: salts.previous,
-    origin: projectId,
-    ip,
-    ua,
+    salts,
   });
 
-  if (
-    await checkDuplicatedEvent({
-      reply,
-      payload: {
+  const uaInfo = parseUserAgent(ua, request.body?.properties);
+  const groupId = uaInfo.isServer
+    ? `${projectId}:${request.body?.profileId ?? generateId()}`
+    : deviceId;
+  await getEventsGroupQueueShard(groupId).add({
+    orderMs: new Date(timestamp).getTime(),
+    data: {
+      projectId,
+      headers,
+      event: {
         ...request.body,
         timestamp,
-        previousDeviceId,
-        currentDeviceId,
+        isTimestampFromThePast,
       },
-      projectId,
-    })
-  ) {
-    return;
-  }
-
-  await eventsQueue.add(
-    'event',
-    {
-      type: 'incomingEvent',
-      payload: {
-        projectId,
-        headers: getStringHeaders(request.headers),
-        event: {
-          ...request.body,
-          timestamp: timestamp.timestamp,
-          isTimestampFromThePast: timestamp.isTimestampFromThePast,
-        },
-        geo,
-        currentDeviceId,
-        previousDeviceId,
-      },
+      uaInfo,
+      geo,
+      deviceId,
+      sessionId: sessionId ?? '',
     },
-    {
-      attempts: 3,
-      backoff: {
-        type: 'exponential',
-        delay: 200,
-      },
-    },
-  );
+    groupId,
+  });
 
   reply.status(202).send('ok');
 }

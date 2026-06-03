@@ -28,7 +28,42 @@ export const zChartEventFilter = z.object({
   value: z
     .array(z.string().or(z.number()).or(z.boolean()).or(z.null()))
     .describe('The values to filter on'),
+  cohortId: z
+    .string()
+    .optional()
+    .describe(
+      'DEPRECATED: legacy single-cohort id, kept for saved reports. ' +
+        'New code reads cohortIds via getCohortIds(filter).',
+    ),
+  cohortIds: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'Cohort IDs for inCohort/notInCohort. Multiple ids OR-match ' +
+        '(matches profiles in any of the listed cohorts).',
+    ),
 });
+
+/**
+ * Normalize the two cohort id fields on a filter into a single array.
+ *
+ * Both `cohortIds` (new, multi-value) and `cohortId` (legacy, single-value)
+ * coexist on `zChartEventFilter` for backward compatibility with saved
+ * reports. Always read cohort membership through this helper instead of
+ * accessing the raw fields, so legacy data keeps working.
+ */
+export function getCohortIds(filter: {
+  cohortIds?: string[];
+  cohortId?: string;
+}): string[] {
+  if (filter.cohortIds && filter.cohortIds.length > 0) {
+    return filter.cohortIds;
+  }
+  if (filter.cohortId) {
+    return [filter.cohortId];
+  }
+  return [];
+}
 
 export const zChartEventSegment = z
   .enum(objectToZodEnums(chartSegments))
@@ -57,12 +92,47 @@ export const zChartEvent = z.object({
     .default([])
     .describe('Filters applied specifically to this event'),
 });
+
+export const zChartFormula = z.object({
+  id: z
+    .string()
+    .optional()
+    .describe('Unique identifier for the formula configuration'),
+  type: z.literal('formula'),
+  formula: z.string().describe('The formula expression (e.g., A+B, A/B)'),
+  displayName: z
+    .string()
+    .optional()
+    .describe('A user-friendly name for display purposes'),
+  hideSeries: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'Alpha IDs (e.g. ["A", "B"]) of series referenced by this formula that should be hidden from the chart while still being used in the formula computation',
+    ),
+});
+
+// Event with type field for discriminated union
+export const zChartEventWithType = zChartEvent.extend({
+  type: z.literal('event'),
+});
+
+export const zChartEventItem = z.discriminatedUnion('type', [
+  zChartEventWithType,
+  zChartFormula,
+]);
+
 export const zChartBreakdown = z.object({
   id: z.string().optional(),
   name: z.string(),
 });
 
-export const zChartEvents = z.array(zChartEvent);
+export const zChartSeries = z
+  .array(zChartEventItem)
+  .describe(
+    'Array of series (events or formulas) to be tracked and displayed in the chart',
+  );
+
 export const zChartBreakdowns = z.array(zChartBreakdown);
 
 export const zChartType = z.enum(objectToZodEnums(chartTypes));
@@ -77,7 +147,68 @@ export const zRange = z.enum(objectToZodEnums(timeWindows));
 
 export const zCriteria = z.enum(['on_or_after', 'on']);
 
-export const zChartInput = z.object({
+// Report Options - Discriminated union based on chart type
+export const zFunnelOptions = z.object({
+  type: z.literal('funnel'),
+  funnelGroup: z.string().optional(),
+  funnelWindow: z.number().optional(),
+});
+
+export const zRetentionOptions = z.object({
+  type: z.literal('retention'),
+  criteria: zCriteria.optional(),
+});
+
+export const zSankeyOptions = z.object({
+  type: z.literal('sankey'),
+  mode: z.enum(['between', 'after', 'before']),
+  steps: z.number().min(2).max(10).default(5),
+  exclude: z.array(z.string()).default([]),
+  include: z.array(z.string()).optional(),
+});
+
+export const zHistogramOptions = z.object({
+  type: z.literal('histogram'),
+  stacked: z.boolean().default(false),
+});
+
+export const zReportOptions = z.discriminatedUnion('type', [
+  zFunnelOptions,
+  zRetentionOptions,
+  zSankeyOptions,
+  zHistogramOptions,
+]);
+
+export type IReportOptions = z.infer<typeof zReportOptions>;
+export type ISankeyOptions = z.infer<typeof zSankeyOptions>;
+export type IHistogramOptions = z.infer<typeof zHistogramOptions>;
+
+export const zWidgetType = z.enum(['realtime', 'counter']);
+export type IWidgetType = z.infer<typeof zWidgetType>;
+
+export const zRealtimeWidgetOptions = z.object({
+  type: z.literal('realtime'),
+  referrers: z.boolean().default(true),
+  countries: z.boolean().default(true),
+  paths: z.boolean().default(false),
+});
+
+export const zCounterWidgetOptions = z.object({
+  type: z.literal('counter'),
+});
+
+export const zWidgetOptions = z.discriminatedUnion('type', [
+  zRealtimeWidgetOptions,
+  zCounterWidgetOptions,
+]);
+
+export type IWidgetOptions = z.infer<typeof zWidgetOptions>;
+export type ICounterWidgetOptions = z.infer<typeof zCounterWidgetOptions>;
+export type IRealtimeWidgetOptions = z.infer<typeof zRealtimeWidgetOptions>;
+
+// Base input schema - for API calls, engine, chart queries
+export const zReportInput = z.object({
+  projectId: z.string().describe('The ID of the project this chart belongs to'),
   chartType: zChartType
     .default('linear')
     .describe('What type of chart should be displayed'),
@@ -86,8 +217,8 @@ export const zChartInput = z.object({
     .describe(
       'The time interval for data aggregation (e.g., day, week, month)',
     ),
-  events: zChartEvents.describe(
-    'Array of events to be tracked and displayed in the chart',
+  series: zChartSeries.describe(
+    'Array of series (events or formulas) to be tracked and displayed in the chart',
   ),
   breakdowns: zChartBreakdowns
     .default([])
@@ -95,6 +226,18 @@ export const zChartInput = z.object({
   range: zRange
     .default('30d')
     .describe('The time range for which data should be displayed'),
+  startDate: z
+    .string()
+    .nullish()
+    .describe(
+      'Custom start date for the data range (overrides range if provided)',
+    ),
+  endDate: z
+    .string()
+    .nullish()
+    .describe(
+      'Custom end date for the data range (overrides range if provided)',
+    ),
   previous: z
     .boolean()
     .default(false)
@@ -108,23 +251,6 @@ export const zChartInput = z.object({
     .describe(
       'The aggregation method for the metric (e.g., sum, count, average)',
     ),
-  projectId: z.string().describe('The ID of the project this chart belongs to'),
-  startDate: z
-    .preprocess(
-      (val) => (val === 'undefined' || val === undefined ? null : val),
-      z.string().nullish(),
-    )
-    .describe(
-      'Custom start date for the data range (overrides range if provided)',
-    ),
-  endDate: z
-    .preprocess(
-      (val) => (val === 'undefined' || val === undefined ? null : val),
-      z.string().nullish(),
-    )
-    .describe(
-      'Custom end date for the data range (overrides range if provided)',
-    ),
   limit: z
     .number()
     .optional()
@@ -133,24 +259,18 @@ export const zChartInput = z.object({
     .number()
     .optional()
     .describe('Skip how many series should be returned'),
-  criteria: zCriteria
+  visibleSeries: z
+    .array(z.string())
+    .nullish()
+    .describe('IDs of series that should be visible on the chart'),
+  options: zReportOptions
     .optional()
-    .describe('Filtering criteria for retention chart (e.g., on_or_after, on)'),
-  funnelGroup: z
-    .string()
+    .describe('Chart-specific options (funnel, retention, sankey)'),
+  // Optional display fields
+  name: z.string().optional().describe('The user-defined name for the report'),
+  lineType: zLineType
     .optional()
-    .describe(
-      'Group identifier for funnel analysis, e.g. "profile_id" or "session_id"',
-    ),
-  funnelWindow: z
-    .number()
-    .optional()
-    .describe('Time window in hours for funnel analysis'),
-});
-
-export const zReportInput = zChartInput.extend({
-  name: z.string().describe('The user-defined name for the report'),
-  lineType: zLineType.describe('The visual style of the line in the chart'),
+    .describe('The visual style of the line in the chart'),
   unit: z
     .string()
     .optional()
@@ -159,17 +279,19 @@ export const zReportInput = zChartInput.extend({
     ),
 });
 
-export const zChartInputAI = zReportInput
-  .omit({
-    startDate: true,
-    endDate: true,
-    lineType: true,
-    unit: true,
-  })
-  .extend({
-    startDate: z.string().describe('The start date for the report'),
-    endDate: z.string().describe('The end date for the report'),
-  });
+// Complete report schema - for saved reports
+export const zReport = zReportInput.extend({
+  name: z
+    .string()
+    .default('Untitled')
+    .describe('The user-defined name for the report'),
+  lineType: zLineType
+    .default('monotone')
+    .describe('The visual style of the line in the chart'),
+});
+
+// Alias for backward compatibility
+export const zChartInput = zReportInput;
 
 export const zInviteUser = z.object({
   email: z.string().email(),
@@ -181,6 +303,22 @@ export const zInviteUser = z.object({
 export const zShareOverview = z.object({
   organizationId: z.string(),
   projectId: z.string(),
+  password: z.string().nullable(),
+  public: z.boolean(),
+});
+
+export const zShareDashboard = z.object({
+  organizationId: z.string(),
+  projectId: z.string(),
+  dashboardId: z.string(),
+  password: z.string().nullable(),
+  public: z.boolean(),
+});
+
+export const zShareReport = z.object({
+  organizationId: z.string(),
+  projectId: z.string(),
+  reportId: z.string(),
   password: z.string().nullable(),
   public: z.boolean(),
 });
@@ -267,15 +405,17 @@ export const zSlackConfig = z
   .object({
     type: z.literal('slack'),
   })
-  .merge(zSlackAuthResponse);
+  .extend(zSlackAuthResponse.shape);
 
 export type ISlackConfig = z.infer<typeof zSlackConfig>;
 
 export const zWebhookConfig = z.object({
   type: z.literal('webhook'),
   url: z.string().url(),
-  headers: z.record(z.string()),
+  headers: z.record(z.string(), z.string()),
   payload: z.record(z.string(), z.unknown()).optional(),
+  mode: z.enum(['message', 'javascript']).default('message'),
+  javascriptTemplate: z.string().optional(),
 });
 export type IWebhookConfig = z.infer<typeof zWebhookConfig>;
 
@@ -306,22 +446,17 @@ const zCreateIntegration = z.object({
   id: z.string().optional(),
   name: z.string().min(1),
   organizationId: z.string().min(1),
-  projectId: z.string().min(1),
 });
 
 export const zCreateSlackIntegration = zCreateIntegration;
 
-export const zCreateWebhookIntegration = zCreateIntegration.merge(
-  z.object({
-    config: zWebhookConfig,
-  }),
-);
+export const zCreateWebhookIntegration = zCreateIntegration.extend({
+  config: zWebhookConfig,
+});
 
-export const zCreateDiscordIntegration = zCreateIntegration.merge(
-  z.object({
-    config: zDiscordConfig,
-  }),
-);
+export const zCreateDiscordIntegration = zCreateIntegration.extend({
+  config: zDiscordConfig,
+});
 
 export const zNotificationRuleEventConfig = z.object({
   type: z.literal('events'),
@@ -371,9 +506,15 @@ export const zProjectFilterProfileId = z.object({
 });
 export type IProjectFilterProfileId = z.infer<typeof zProjectFilterProfileId>;
 
+export const zProjectFilterEvent = zChartEvent.extend({
+  type: z.literal('event'),
+});
+export type IProjectFilterEvent = z.infer<typeof zProjectFilterEvent>;
+
 export const zProjectFilters = z.discriminatedUnion('type', [
   zProjectFilterIp,
   zProjectFilterProfileId,
+  zProjectFilterEvent,
 ]);
 export type IProjectFilters = z.infer<typeof zProjectFilters>;
 
@@ -384,8 +525,20 @@ export const zProject = z.object({
   domain: z.string().url().or(z.literal('').or(z.null())),
   cors: z.array(z.string()).default([]),
   crossDomain: z.boolean().default(false),
+  allowUnsafeRevenueTracking: z.boolean().default(false),
 });
 export type IProjectEdit = z.infer<typeof zProject>;
+
+export const zProjectUpdate = z.object({
+  id: z.string(),
+  name: z.string().min(1).optional(),
+  filters: z.array(zProjectFilters).optional(),
+  domain: z.string().url().or(z.literal('').or(z.null())).optional(),
+  cors: z.array(z.string()).optional(),
+  crossDomain: z.boolean().optional(),
+  allowUnsafeRevenueTracking: z.boolean().optional(),
+});
+export type IProjectUpdate = z.infer<typeof zProjectUpdate>;
 
 export const zPassword = z.string().min(8);
 
@@ -421,9 +574,25 @@ export const zRequestResetPassword = z.object({
 });
 export type IRequestResetPassword = z.infer<typeof zRequestResetPassword>;
 
+export const zTotpCode = z
+  .string()
+  .transform((v) => v.replace(/\s+/g, ''))
+  .refine((v) => /^\d{6}$/.test(v), { message: 'Enter a 6-digit code' });
+export type ITotpCode = z.infer<typeof zTotpCode>;
+
+export const zTotpOrRecoveryCode = z
+  .string()
+  .min(1)
+  .transform((v) => v.trim());
+export type ITotpOrRecoveryCode = z.infer<typeof zTotpOrRecoveryCode>;
+
 export const zSignInShare = z.object({
   password: z.string().min(1),
   shareId: z.string().min(1),
+  shareType: z
+    .enum(['overview', 'dashboard', 'report'])
+    .optional()
+    .default('overview'),
 });
 export type ISignInShare = z.infer<typeof zSignInShare>;
 
@@ -435,8 +604,96 @@ export const zCheckout = z.object({
 });
 export type ICheckout = z.infer<typeof zCheckout>;
 
+export const zGroupId = z
+  .string()
+  .min(1)
+  .regex(
+    /^[a-z0-9_-]+$/,
+    'ID must only contain lowercase letters, digits, hyphens, or underscores',
+  );
+
+export const zCreateGroup = z.object({
+  id: zGroupId,
+  projectId: z.string(),
+  type: z.string().min(1),
+  name: z.string().min(1),
+  properties: z.record(z.string(), z.string()).default({}),
+});
+export type ICreateGroup = z.infer<typeof zCreateGroup>;
+
+export const zUpdateGroup = z.object({
+  id: z.string().min(1),
+  projectId: z.string(),
+  type: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
+  properties: z.record(z.string(), z.string()).optional(),
+});
+export type IUpdateGroup = z.infer<typeof zUpdateGroup>;
+
 export const zEditOrganization = z.object({
   id: z.string().min(2),
   name: z.string().min(2),
   timezone: z.string().min(1),
 });
+
+const zProjectMapper = z.object({
+  from: z.string().min(1),
+  to: z.string().min(1),
+});
+
+const createFileImportConfig = <T extends string>(provider: T) =>
+  z.object({
+    provider: z.literal(provider),
+    type: z.literal('file'),
+    fileUrl: z.string().url(),
+  });
+
+// Import configs
+export const zUmamiImportConfig = createFileImportConfig('umami').extend({
+  projectMapper: z.array(zProjectMapper),
+});
+
+export type IUmamiImportConfig = z.infer<typeof zUmamiImportConfig>;
+
+export const zPlausibleImportConfig = createFileImportConfig('plausible');
+export type IPlausibleImportConfig = z.infer<typeof zPlausibleImportConfig>;
+
+export const zMixpanelDataResidency = z.enum(['us', 'eu', 'in']);
+export type IMixpanelDataResidency = z.infer<typeof zMixpanelDataResidency>;
+
+export const zMixpanelImportConfig = z.object({
+  provider: z.literal('mixpanel'),
+  type: z.literal('api'),
+  serviceAccount: z.string().min(1),
+  serviceSecret: z.string().min(1),
+  projectId: z.string().min(1),
+  from: z.string().min(1),
+  to: z.string().min(1),
+  mapScreenViewProperty: z.string().optional(),
+  dataResidency: zMixpanelDataResidency.optional(),
+});
+export type IMixpanelImportConfig = z.infer<typeof zMixpanelImportConfig>;
+
+export type IImportConfig =
+  | IUmamiImportConfig
+  | IPlausibleImportConfig
+  | IMixpanelImportConfig;
+
+export const zCreateImport = z.object({
+  projectId: z.string().min(1),
+  provider: z.enum(['umami', 'plausible', 'mixpanel']),
+  config: z.union([
+    zUmamiImportConfig,
+    zPlausibleImportConfig,
+    zMixpanelImportConfig,
+  ]),
+});
+
+export type ICreateImport = z.infer<typeof zCreateImport>;
+
+export * from './types.insights';
+export * from './types.validation';
+export * from './track.validation';
+export * from './event-blocklist';
+export * from './chat';
+export * from './cohort.validation';

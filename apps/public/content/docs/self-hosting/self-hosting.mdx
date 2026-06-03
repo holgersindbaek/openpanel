@@ -16,7 +16,7 @@ import { Step, Steps } from 'fumadocs-ui/components/steps';
 ### Quickstart
 
 ```bash
-git clone https://github.com/Openpanel-dev/openpanel && cd openpanel/self-hosting && ./setup
+git clone -b self-hosting https://github.com/Openpanel-dev/openpanel && cd openpanel/self-hosting && ./setup
 # After setup is complete run `./start` to start OpenPanel
 ```
 
@@ -25,10 +25,10 @@ git clone https://github.com/Openpanel-dev/openpanel && cd openpanel/self-hostin
 <Step>
 ### Clone
 
-Clone the repository to your VPS
+Clone the repository to your VPS and checkout the self-hosting tag
 
 ```bash
-git clone https://github.com/Openpanel-dev/openpanel.git
+git clone -b self-hosting https://github.com/Openpanel-dev/openpanel.git
 ```
 </Step>
 <Step>
@@ -76,7 +76,7 @@ The path should be `/api` and the domain should be your domain.
 
 ```html title="index.html"
 <script>
-  window.op = window.op||function(...args){(window.op.q=window.op.q||[]).push(args);};
+  window.op=window.op||function(){var n=[];return new Proxy(function(){arguments.length&&n.push([].slice.call(arguments))},{get:function(t,r){return"q"===r?n:function(){n.push([r].concat([].slice.call(arguments)))}} ,has:function(t,r){return"q"===r}}) }();
   window.op('init', {
     apiUrl: 'https://your-domain.com/api', // [!code highlight]
     clientId: 'YOUR_CLIENT_ID',
@@ -102,7 +102,7 @@ const op = new OpenPanel({
 
 ### E-mail
 
-Some of OpenPanel's features require e-mail. We use Resend as our transactional e-mail provider. So to get this working you'll need to create an account on Resend and set the `RESEND_API_KEY` environment variable.
+Some of OpenPanel's features require e-mail. We use Resend as our transactional e-mail provider by default, but you can also use your own SMTP server. To enable email features, set the relevant environment variables described below.
 
 <Callout>This is nothing that is required for the basic setup, but it is required for some features.</Callout>
 
@@ -112,11 +112,70 @@ Features that require e-mail:
 - Invitations
 - more will be added over time
 
+#### Option A — Resend
+
+Create an account on [resend.com](https://resend.com), verify your sender domain, and set the `RESEND_API_KEY` environment variable.
+
+```bash title=".env"
+RESEND_API_KEY=re_xxxxxxxxxxxxx
+EMAIL_SENDER=noreply@yourdomain.com
+```
+
+#### Option B — SMTP
+
+If you prefer to use your own SMTP server, set `SMTP_HOST` and OpenPanel will use it instead of Resend.
+
+```bash title=".env"
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=smtp-user@example.com
+SMTP_PASS=your-smtp-password
+EMAIL_SENDER=noreply@yourdomain.com
+```
+
+<Callout type="info">
+`SMTP_HOST` takes priority over `RESEND_API_KEY` if both are set. If neither is configured, emails are logged to the console instead of being sent.
+</Callout>
+
+For email configuration details, see the [Environment Variables documentation](/docs/self-hosting/environment-variables#email).
+
+### AI integration
+
+OpenPanel includes an AI-powered analytics assistant that can help you analyze data, create reports, and answer questions about your analytics. It supports both OpenAI and Anthropic — set one or both keys and the model picker in the chat will only show models whose provider has a key configured.
+
+#### Supported Models
+
+- **OpenAI** — `GPT-4.1`, `GPT-4.1 mini`, `GPT-5.4 mini`
+- **Anthropic** — `Claude Haiku 4.5`, `Claude Sonnet 4.6`, `Claude Opus 4.6`
+
+#### Configuration
+
+Add one or both of the following to your `.env` file in the `self-hosting` directory, then restart the API service:
+
+```bash title=".env"
+# OpenAI — get a key at platform.openai.com/api-keys
+OPENAI_API_KEY=sk-your-openai-api-key-here
+
+# Anthropic — get a key at console.anthropic.com
+ANTHROPIC_API_KEY=sk-ant-your-anthropic-api-key-here
+```
+
+<Callout type="info">
+The AI assistant is optional. Without either key set, the chat drawer still opens but shows a setup hint — every other OpenPanel feature continues to work normally.
+</Callout>
+
+<Callout type="warn">
+AI features will incur costs based on your usage and the model you choose. Monitor your API usage through your provider's dashboard to avoid unexpected charges.
+</Callout>
+
+For complete AI configuration details, see the [Environment Variables documentation](/docs/self-hosting/environment-variables#ai-features).
+
 ### Managed Redis
 
 If you use a managed Redis service, you may need to set the `notify-keyspace-events` manually.
 
-Without this setting we wont be able to listen for expired keys which we use for caluclating currently active vistors.
+Without this setting we won't be able to listen for expired keys which we use for calculating currently active visitors.
 
 > You will see a warning in the logs if this needs to be set manually.
 
@@ -135,6 +194,8 @@ Invitations are enabled by default. You can also disable invitations by setting 
 ```bash title=".env"
 ALLOW_INVITATION=false
 ```
+
+For a complete reference of all environment variables, see the [Environment Variables documentation](/docs/self-hosting/environment-variables).
 
 ## Helpful scripts
 

@@ -16,19 +16,21 @@ export function printBoxMessage(title: string, lines: (string | unknown)[]) {
 
 export function getIsCluster() {
   const args = process.argv;
-  const noClusterArg = args.includes('--no-cluster');
-  if (noClusterArg) {
-    return false;
-  }
-  return !getIsSelfHosting();
+  return (
+    args.includes('--cluster') ||
+    process.env.CLICKHOUSE_CLUSTER === 'true' ||
+    process.env.CLICKHOUSE_CLUSTER === '1'
+  );
 }
 
 export function getIsSelfHosting() {
-  return (
-    process.env.NEXT_PUBLIC_SELF_HOSTED === 'true' || !!process.env.SELF_HOSTED
-  );
+  return process.env.SELF_HOSTED === 'true' || !!process.env.SELF_HOSTED;
 }
 
 export function getIsDry() {
   return process.argv.includes('--dry');
+}
+
+export function getShouldIgnoreRecord() {
+  return process.argv.includes('--no-record');
 }

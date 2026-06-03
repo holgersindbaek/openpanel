@@ -1,4 +1,4 @@
-![hero](apps/public/public/ogimage.jpg)
+![hero](apps/public/public/ogimage.png)
 
 <p align="center">
 	<h1 align="center"><b>Openpanel</b></h1>
@@ -25,9 +25,46 @@
   
 Openpanel is an open-source web and product analytics platform that combines the power of Mixpanel with the ease of Plausible and one of the best Google Analytics replacements.
 
-## Disclaimer
+## ✨ Features
 
-> Hey folks 👋🏻 Just a friendly heads-up: we're still in the early stages of this project. We have migrated from pages to app dir and made some major changes during the development of Openpanel, so everything is not perfect.
+- **🔍 Advanced Analytics**: Funnels, cohorts, user profiles, and session history
+- **🎬 Session Replay**: Record and replay user sessions with privacy controls built in
+- **📊 Real-time Dashboards**: Live data updates and interactive charts
+- **🎯 A/B Testing**: Built-in variant testing with detailed breakdowns
+- **🔔 Smart Notifications**: Event and funnel-based alerts
+- **🌍 Privacy-First**: Cookieless tracking and GDPR compliance
+- **🚀 Developer-Friendly**: Comprehensive SDKs and API access
+- **📦 Self-Hosted**: Full control over your data and infrastructure
+- **💸 Transparent Pricing**: No hidden costs or usage limits
+- **🛠️ Custom Dashboards**: Flexible chart creation and data visualization
+- **📱 Multi-Platform**: Web, mobile (iOS/Android), and server-side tracking
+- **🤖 MCP Server**: Ask Claude, Cursor, or any MCP client about your users — 38 tools, hosted, no install
+- **💰 Revenue Tracking**: Monitor purchases, subscriptions, and LTV alongside product events
+- **🔌 Integrations**: Connect Google Search Console, and more to enrich your data
+
+## 📊 Analytics Platform Comparison
+
+| Feature                                | OpenPanel | Mixpanel | GA4       | Plausible |
+|----------------------------------------|-----------|----------|-----------|-----------|
+| ✅ Open-source                         | ✅         | ❌        | ❌        | ✅         |
+| 🧩 Self-hosting supported              | ✅         | ❌        | ❌        | ✅         |
+| 🔒 Cookieless by default               | ✅         | ❌        | ❌        | ✅         |
+| 🔁 Real-time dashboards                | ✅         | ✅        | ❌        | ✅         |
+| 🔍 Funnels & cohort analysis           | ✅         | ✅        | ✅*       | ✅***         |
+| 👤 User profiles & session history     | ✅         | ✅        | ❌        | ❌         |
+| 🎬 Session replay                      | ✅         | ✅****    | ❌        | ❌         |
+| 📈 Custom dashboards & charts          | ✅         | ✅        | ✅        | ❌         |
+| 💬 Event & funnel notifications        | ✅         | ✅        | ❌        | ❌         |
+| 🌍 GDPR-compliant tracking             | ✅         | ✅        | ❌**      | ✅         |
+| 📦 SDKs (Web, Swift, Kotlin, ReactNative) | ✅      | ✅        | ✅        | ❌         |
+| 💸 Transparent pricing                 | ✅         | ❌        | ✅*       | ✅         |
+| 🚀 Built for developers                | ✅         | ✅        | ❌        | ✅         |
+| 🔧 A/B testing & variant breakdowns    | ✅         | ✅        | ❌        | ❌         |
+
+> ✅* GA4 has a free tier but often requires BigQuery (paid) for raw data access.
+> ❌** GA4 has faced GDPR bans in several EU countries due to data transfers to US-based servers.
+> ✅*** Plausible has simple goals
+> ✅**** Mixpanel session replay is limited to 5k sessions/month on free and 20k on paid. OpenPanel has no limit.
 
 ## Stack
 
@@ -37,6 +74,7 @@ Openpanel is an open-source web and product analytics platform that combines the
 - **Clickhouse** - storing events
 - **Redis** - cache layer, pub/sub and queue
 - **BullMQ** - queue
+- **GroupMQ** - for grouped queue
 - **Resend** - email
 - **Arctic** - oauth
 - **Oslo** - auth
@@ -63,18 +101,13 @@ You can find the how to [here](https://openpanel.dev/docs/self-hosting/self-host
 - Node
 - pnpm
 
-### Setup
-
-Add the following to your hosts file (`/etc/hosts` on mac/linux or `C:\Windows\System32\drivers\etc\hosts` on windows). This will be your local domain.
-
-```
-127.0.0.1 op.local
-127.0.0.1 api.op.local
-```
-
 ### Start
 
 ```bash
+pnpm install
+cp .env.example .env
+echo "API_URL=http://localhost:3333" > apps/start/.env
+
 pnpm dock:up
 pnpm codegen
 pnpm migrate:deploy # once to setup the db
@@ -83,8 +116,8 @@ pnpm dev
 
 You can now access the following:
 
-- Dashboard: https://op.local
-- API: https://api.op.local
+- Dashboard: https://localhost:3000
+- API: https://api.localhost:3333
 - Bullboard (queue): http://localhost:9999
 - `pnpm dock:ch` to access clickhouse terminal
 - `pnpm dock:redis` to access redis terminal

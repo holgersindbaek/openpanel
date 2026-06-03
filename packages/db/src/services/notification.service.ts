@@ -4,16 +4,16 @@ import { cacheable } from '@openpanel/redis';
 import type { IChartEvent, IChartEventFilter } from '@openpanel/validation';
 import { pathOr } from 'ramda';
 import {
+  db,
   type Integration,
   type Notification,
-  Prisma,
-  db,
+  type Prisma,
 } from '../prisma-client';
 import type {
   IServiceCreateEventPayload,
   IServiceEvent,
 } from './event.service';
-import { getProfileById, getProfileByIdCached } from './profile.service';
+import { getProfileById } from './profile.service';
 import { getProjectByIdCached } from './project.service';
 
 type ICreateNotification = Pick<
@@ -69,7 +69,8 @@ export type INotificationRuleCached = Awaited<
   ReturnType<typeof getNotificationRulesByProjectId>
 >[number];
 export const getNotificationRulesByProjectId = cacheable(
-  function getNotificationRulesByProjectId(projectId: string) {
+  'getNotificationRulesByProjectId',
+  (projectId: string) => {
     return db.notificationRule.findMany({
       where: {
         projectId,
@@ -90,6 +91,7 @@ export const getNotificationRulesByProjectId = cacheable(
     });
   },
   60 * 24,
+  { cacheEmptyArray: true }
 );
 
 function getIntegration(integrationId: string | null) {
@@ -116,22 +118,47 @@ function getIntegration(integrationId: string | null) {
   };
 }
 
-export async function createNotification(notification: ICreateNotification) {
-  const res = await db.notification.create({
-    data: {
-      title: notification.title,
-      message: notification.message,
-      projectId: notification.projectId,
-      payload: notification.payload || Prisma.DbNull,
-      ...getIntegration(notification.integrationId),
-      notificationRuleId: notification.notificationRuleId,
-    },
-  });
-
-  return triggerNotification(res);
+function stripNullChars<T>(value: T): T {
+  if (typeof value === 'string') {
+    return value.split('\u0000').join('') as T;
+  }
+  if (value instanceof Date) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(stripNullChars) as T;
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, stripNullChars(v)])
+    ) as T;
+  }
+  return value;
 }
 
-export function triggerNotification(notification: Notification) {
+export async function createNotification(notification: ICreateNotification) {
+  const data: Prisma.NotificationUncheckedCreateInput = {
+    title: notification.title,
+    message: notification.message,
+    projectId: notification.projectId,
+    payload: stripNullChars(notification.payload) || undefined,
+    ...getIntegration(notification.integrationId),
+    notificationRuleId: notification.notificationRuleId,
+  };
+
+  // Only create notifications for app
+  if (data.sendToApp) {
+    await db.notification.create({
+      data,
+    });
+  }
+
+  return triggerNotification(data);
+}
+
+export function triggerNotification(
+  notification: Prisma.NotificationUncheckedCreateInput
+) {
   return notificationQueue.add('sendNotification', {
     type: 'sendNotification',
     payload: {
@@ -142,12 +169,14 @@ export function triggerNotification(notification: Notification) {
 
 function matchEventFilters(
   payload: IServiceCreateEventPayload,
-  filters: IChartEventFilter[],
+  filters: IChartEventFilter[]
 ) {
   return filters.every((filter) => {
     const { name, value, operator } = filter;
 
-    if (value.length === 0) return true;
+    if (value.length === 0) {
+      return true;
+    }
 
     if (name === 'has_profile') {
       if (value.includes('true')) {
@@ -178,8 +207,26 @@ function matchEventFilters(
       case 'regex': {
         return value
           .map((val) => stripLeadingAndTrailingSlashes(String(val)))
-          .some((val) => new RegExp(val).test(propertyValue));
+          .some((val) => {
+            try {
+              return new RegExp(val).test(propertyValue);
+            } catch {
+              return false;
+            }
+          });
       }
+      case 'isNull':
+        return propertyValue === '';
+      case 'isNotNull':
+        return propertyValue !== '';
+      case 'gt':
+        return value.some((val) => Number(propertyValue) > Number(val));
+      case 'lt':
+        return value.some((val) => Number(propertyValue) < Number(val));
+      case 'gte':
+        return value.some((val) => Number(propertyValue) >= Number(val));
+      case 'lte':
+        return value.some((val) => Number(propertyValue) <= Number(val));
       default:
         return false;
     }
@@ -188,7 +235,7 @@ function matchEventFilters(
 
 export function matchEvent(
   payload: IServiceCreateEventPayload,
-  chartEvent: IChartEvent,
+  chartEvent: IChartEvent
 ) {
   if (payload.name !== chartEvent.name && chartEvent.name !== '*') {
     return false;
@@ -208,7 +255,9 @@ function notificationTemplateEvent({
   payload: IServiceCreateEventPayload;
   rule: INotificationRuleCached;
 }) {
-  if (!rule.template) return `You received a new "${payload.name}" event`;
+  if (!rule.template) {
+    return `You received a new "${payload.name}" event`;
+  }
   let template = rule.template
     .replaceAll('$EVENT_NAME', payload.name)
     .replaceAll('$RULE_NAME', rule.name)
@@ -223,7 +272,7 @@ function notificationTemplateEvent({
     if (value) {
       template = template.replaceAll(
         match,
-        typeof value === 'object' ? JSON.stringify(value) : value,
+        typeof value === 'object' ? JSON.stringify(value) : value
       );
     }
   }
@@ -238,14 +287,17 @@ function notificationTemplateFunnel({
   events: IServiceEvent[];
   rule: INotificationRuleCached;
 }) {
-  if (!rule.template) return `Funnel "${rule.name}" completed`;
+  if (!rule.template) {
+    return `Funnel "${rule.name}" completed`;
+  }
   return rule.template
     .replaceAll('$EVENT_NAME', events.map((e) => e.name).join(' -> '))
     .replaceAll('$RULE_NAME', rule.name);
 }
 
+const PROFILE_TEMPLATE_REGEX = /{{profile\.[^}]*}}/;
 export async function checkNotificationRulesForEvent(
-  payload: IServiceCreateEventPayload,
+  payload: IServiceCreateEventPayload
 ) {
   const project = await getProjectByIdCached(payload.projectId);
   const rules = await getNotificationRulesByProjectId(payload.projectId);
@@ -254,12 +306,9 @@ export async function checkNotificationRulesForEvent(
   // so we can use it in the template
   if (
     payload.profileId &&
-    rules.some((rule) => rule.template?.match(/{{profile\.[^}]*}}/))
+    rules.some((rule) => rule.template?.match(PROFILE_TEMPLATE_REGEX))
   ) {
-    const profile = await getProfileByIdCached(
-      payload.profileId,
-      payload.projectId,
-    );
+    const profile = await getProfileById(payload.profileId, payload.projectId);
     if (profile) {
       (payload as any).profile = profile;
     }
@@ -294,7 +343,7 @@ export async function checkNotificationRulesForEvent(
             ...notification,
             integrationId: integration.id,
             notificationRuleId: rule.id,
-          }),
+          })
         );
 
         if (rule.sendToApp) {
@@ -303,7 +352,7 @@ export async function checkNotificationRulesForEvent(
               ...notification,
               integrationId: APP_NOTIFICATION_INTEGRATION_ID,
               notificationRuleId: rule.id,
-            }),
+            })
           );
         }
 
@@ -313,32 +362,46 @@ export async function checkNotificationRulesForEvent(
               ...notification,
               integrationId: EMAIL_NOTIFICATION_INTEGRATION_ID,
               notificationRuleId: rule.id,
-            }),
+            })
           );
         }
 
         return promises;
       }
-    }),
+
+      return [];
+    })
   );
 }
 
+const isFunnelRule = (rule: INotificationRuleCached) =>
+  rule.config.type === 'funnel';
+
+export function getHasFunnelRules(rules: INotificationRuleCached[]) {
+  return rules.some(isFunnelRule);
+}
+
+export function getFunnelRules(rules: INotificationRuleCached[]) {
+  return rules.filter(isFunnelRule);
+}
+
 export async function checkNotificationRulesForSessionEnd(
-  events: IServiceEvent[],
+  events: IServiceEvent[]
 ) {
   const sortedEvents = events.sort(
-    (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+    (a, b) => a.createdAt.getTime() - b.createdAt.getTime()
   );
   const projectId = sortedEvents[0]?.projectId;
-  if (!projectId) return null;
+  if (!projectId) {
+    return null;
+  }
 
   const [project, rules] = await Promise.all([
     getProjectByIdCached(projectId),
     getNotificationRulesByProjectId(projectId),
   ]);
 
-  const funnelRules = rules.filter((rule) => rule.config.type === 'funnel');
-
+  const funnelRules = getFunnelRules(rules);
   const notificationPromises = funnelRules.flatMap((rule) => {
     // Match funnel events
     let funnelIndex = 0;
@@ -347,12 +410,16 @@ export async function checkNotificationRulesForSessionEnd(
       if (matchEvent(event, rule.config.events[funnelIndex]!)) {
         matchedEvents.push(event);
         funnelIndex++;
-        if (funnelIndex === rule.config.events.length) break;
+        if (funnelIndex === rule.config.events.length) {
+          break;
+        }
       }
     }
 
     // If funnel not completed, skip this rule
-    if (funnelIndex < rule.config.events.length) return [];
+    if (funnelIndex < rule.config.events.length) {
+      return [];
+    }
 
     // Create notification object
     const notification = {
@@ -372,7 +439,7 @@ export async function checkNotificationRulesForSessionEnd(
           ...notification,
           integrationId: integration.id,
           notificationRuleId: rule.id,
-        }),
+        })
       ),
       ...(rule.sendToApp
         ? [

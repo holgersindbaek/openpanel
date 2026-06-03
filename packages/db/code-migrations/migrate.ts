@@ -1,19 +1,37 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 import { db } from '../index';
-import { getIsDry, getIsSelfHosting, printBoxMessage } from './helpers';
+import {
+  getIsCluster,
+  getIsDry,
+  getIsSelfHosting,
+  getShouldIgnoreRecord,
+  printBoxMessage,
+} from './helpers';
 
 async function migrate() {
   const args = process.argv.slice(2);
   const migration = args.filter((arg) => !arg.startsWith('--'))[0];
 
   const migrationsDir = path.join(__dirname, '..', 'code-migrations');
-  const migrations = fs.readdirSync(migrationsDir).filter((file) => {
-    const version = file.split('-')[0];
-    return (
-      !Number.isNaN(Number.parseInt(version ?? '')) && file.endsWith('.ts')
-    );
-  });
+  const migrations = fs
+    .readdirSync(migrationsDir)
+    .filter((file) => {
+      const version = file.split('-')[0];
+      return (
+        !Number.isNaN(Number.parseInt(version ?? '')) && file.endsWith('.ts')
+      );
+    })
+    .sort((a, b) => {
+      const aVersion = Number.parseInt(a.split('-')[0]!);
+      const bVersion = Number.parseInt(b.split('-')[0]!);
+      return aVersion - bVersion;
+    });
 
   const finishedMigrations = await db.codeMigration.findMany();
 
@@ -34,14 +52,23 @@ async function migrate() {
       .map((migration) => `\t- ${migration}`),
   ]);
 
+  printBoxMessage('🤝 Config', [
+    `isClustered:   ${getIsCluster()}`,
+    `isSelfHosting: ${getIsSelfHosting()}`,
+  ]);
+
   printBoxMessage('🌍 Environment', [
     `POSTGRES:   ${process.env.DATABASE_URL}`,
     `CLICKHOUSE: ${process.env.CLICKHOUSE_URL}`,
   ]);
 
   if (!getIsSelfHosting()) {
-    printBoxMessage('🕒 Migrations starts in 10 seconds', []);
-    await new Promise((resolve) => setTimeout(resolve, 10000));
+    if (!getIsDry()) {
+      printBoxMessage('🕒 Migrations starts in 10 seconds', []);
+      await new Promise((resolve) => setTimeout(resolve, 10000));
+    } else {
+      printBoxMessage('🕒 Migrations starts now (dry run)', []);
+    }
   }
 
   if (migration) {
@@ -66,7 +93,7 @@ async function runMigration(migrationsDir: string, file: string) {
   try {
     const migration = await import(path.join(migrationsDir, file));
     await migration.up();
-    if (!getIsDry()) {
+    if (!getIsDry() && !getShouldIgnoreRecord()) {
       await db.codeMigration.upsert({
         where: {
           name: file,

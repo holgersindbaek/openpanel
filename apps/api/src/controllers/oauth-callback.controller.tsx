@@ -1,16 +1,17 @@
-import { LogError } from '@/utils/errors';
 import {
   Arctic,
-  type OAuth2Tokens,
   createSession,
   generateSessionToken,
   github,
   google,
+  type OAuth2Tokens,
+  setLastAuthProviderCookie,
   setSessionTokenCookie,
 } from '@openpanel/auth';
 import { type Account, connectUserToOrganization, db } from '@openpanel/db';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { LogError } from '@/utils/errors';
 
 async function getGithubEmail(githubAccessToken: string) {
   const emailListRequest = new Request('https://api.github.com/user/emails');
@@ -74,9 +75,15 @@ async function handleExistingUser({
   setSessionTokenCookie(
     (...args) => reply.setCookie(...args),
     sessionToken,
-    session.expiresAt,
+    session.expiresAt
   );
-  return reply.redirect(process.env.NEXT_PUBLIC_DASHBOARD_URL!);
+  setLastAuthProviderCookie(
+    (...args) => reply.setCookie(...args),
+    providerName
+  );
+  return reply.redirect(
+    process.env.DASHBOARD_URL || process.env.NEXT_PUBLIC_DASHBOARD_URL!
+  );
 }
 
 async function handleNewUser({
@@ -101,7 +108,7 @@ async function handleNewUser({
         existingUser,
         oauthUser,
         providerName,
-      },
+      }
     );
   }
 
@@ -123,11 +130,11 @@ async function handleNewUser({
     try {
       await connectUserToOrganization({ user, inviteId });
     } catch (error) {
-      reply.log.error('error connecting user to organization', {
+      reply.log.error({
         error,
         inviteId,
         user,
-      });
+      }, 'error connecting user to organization');
     }
   }
 
@@ -136,9 +143,15 @@ async function handleNewUser({
   setSessionTokenCookie(
     (...args) => reply.setCookie(...args),
     sessionToken,
-    session.expiresAt,
+    session.expiresAt
   );
-  return reply.redirect(process.env.NEXT_PUBLIC_DASHBOARD_URL!);
+  setLastAuthProviderCookie(
+    (...args) => reply.setCookie(...args),
+    providerName
+  );
+  return reply.redirect(
+    process.env.DASHBOARD_URL || process.env.NEXT_PUBLIC_DASHBOARD_URL!
+  );
 }
 
 // Provider-specific user fetching
@@ -215,7 +228,7 @@ interface ValidatedOAuthQuery {
 
 async function validateOAuthCallback(
   req: FastifyRequest,
-  provider: Provider,
+  provider: Provider
 ): Promise<ValidatedOAuthQuery> {
   const schema = z.object({
     code: z.string(),
@@ -348,7 +361,9 @@ export async function googleCallback(req: FastifyRequest, reply: FastifyReply) {
 }
 
 function redirectWithError(reply: FastifyReply, error: LogError | unknown) {
-  const url = new URL(process.env.NEXT_PUBLIC_DASHBOARD_URL!);
+  const url = new URL(
+    process.env.DASHBOARD_URL || process.env.NEXT_PUBLIC_DASHBOARD_URL!
+  );
   url.pathname = '/login';
   if (error instanceof LogError) {
     url.searchParams.set('error', error.message);

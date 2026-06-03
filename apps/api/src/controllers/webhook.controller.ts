@@ -1,15 +1,17 @@
 import fs from 'node:fs';
-import path from 'node:path';
+import path, { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+import { tryCatch } from '@openpanel/common';
 import { db, getOrganizationByProjectIdCached } from '@openpanel/db';
 import {
   sendSlackNotification,
   slackInstaller,
 } from '@openpanel/integrations/src/slack';
-import {
-  PolarWebhookVerificationError,
-  getProduct,
-  validatePolarEvent,
-} from '@openpanel/payments';
+import { getProduct, validatePolarEvent } from '@openpanel/payments';
 import { publishEvent } from '@openpanel/redis';
 import { zSlackAuthResponse } from '@openpanel/validation';
 import type { FastifyReply, FastifyRequest } from 'fastify';
@@ -22,7 +24,6 @@ const paramsSchema = z.object({
 
 const metadataSchema = z.object({
   organizationId: z.string(),
-  projectId: z.string(),
   integrationId: z.string(),
 });
 
@@ -30,7 +31,7 @@ export async function slackWebhook(
   request: FastifyRequest<{
     Querystring: unknown;
   }>,
-  reply: FastifyReply,
+  reply: FastifyReply
 ) {
   const parsedParams = paramsSchema.safeParse(request.query);
 
@@ -41,10 +42,10 @@ export async function slackWebhook(
 
   const veryfiedState = await slackInstaller.stateStore?.verifyStateParam(
     new Date(),
-    parsedParams.data.state,
+    parsedParams.data.state
   );
   const parsedMetadata = metadataSchema.safeParse(
-    JSON.parse(veryfiedState?.metadata ?? '{}'),
+    JSON.parse(veryfiedState?.metadata ?? '{}')
   );
 
   if (!parsedMetadata.success) {
@@ -71,7 +72,7 @@ export async function slackWebhook(
           zod: parsedJson,
           json,
         },
-        'Failed to parse slack auth response',
+        'Failed to parse slack auth response'
       );
       const html = fs.readFileSync(path.join(__dirname, 'error.html'), 'utf8');
       return reply.status(500).header('Content-Type', 'text/html').send(html);
@@ -84,7 +85,7 @@ export async function slackWebhook(
         '👋 Hello. You have successfully connected OpenPanel.dev to your Slack workspace.',
     });
 
-    const { projectId, organizationId, integrationId } = parsedMetadata.data;
+    const { organizationId, integrationId } = parsedMetadata.data;
 
     await db.integration.update({
       where: {
@@ -100,7 +101,7 @@ export async function slackWebhook(
     });
 
     return reply.redirect(
-      `${process.env.NEXT_PUBLIC_DASHBOARD_URL}/${organizationId}/${projectId}/settings/integrations?tab=installed`,
+      `${process.env.DASHBOARD_URL || process.env.NEXT_PUBLIC_DASHBOARD_URL}/${organizationId}/integrations/installed`
     );
   } catch (err) {
     request.log.error(err);
@@ -109,19 +110,58 @@ export async function slackWebhook(
   }
 }
 
+async function clearOrganizationCache(organizationId: string) {
+  const projects = await db.project.findMany({
+    where: {
+      organizationId,
+    },
+  });
+  for (const project of projects) {
+    await getOrganizationByProjectIdCached.clear(project.id);
+  }
+}
+
 export async function polarWebhook(
   request: FastifyRequest<{
     Querystring: unknown;
   }>,
-  reply: FastifyReply,
+  reply: FastifyReply
 ) {
-  try {
-    const event = validatePolarEvent(
+  request.log.info({ body: request.body }, 'polar webhook received');
+
+  const validation = await tryCatch(async () =>
+    validatePolarEvent(
       request.rawBody!,
       request.headers as Record<string, string>,
-      process.env.POLAR_WEBHOOK_SECRET ?? '',
-    );
+      process.env.POLAR_WEBHOOK_SECRET ?? ''
+    )
+  );
 
+  if (!validation.ok) {
+    request.log.error(
+      { err: validation.error },
+      'polar webhook: failed to parse event'
+    );
+    throw validation.error;
+  }
+
+  const event = validation.data;
+
+  const eventCtx = {
+    eventType: event.type,
+    eventId: 'id' in event.data ? event.data.id : undefined,
+  };
+
+  if (
+    'data' in event &&
+    'product' in event.data &&
+    event.data.product?.name === 'Supporter'
+  ) {
+    request.log.info(eventCtx, 'polar webhook: supporter event ignored');
+    return reply.status(202).send('OK');
+  }
+
+  const handler = await tryCatch(async () => {
     switch (event.type) {
       case 'order.created': {
         const metadata = z
@@ -137,10 +177,13 @@ export async function polarWebhook(
             },
             data: {
               subscriptionPeriodEventsCount: 0,
+              subscriptionPeriodEventsCountExceededAt: null,
             },
           });
+
+          await clearOrganizationCache(metadata.organizationId);
         }
-        break;
+        return;
       }
       case 'subscription.updated': {
         const metadata = z
@@ -151,14 +194,29 @@ export async function polarWebhook(
           .parse(event.data.metadata);
 
         const product = await getProduct(event.data.productId);
-        const eventsLimit = product.metadata?.eventsLimit;
-        const subscriptionPeriodEventsLimit =
-          typeof eventsLimit === 'number' ? eventsLimit : undefined;
+        const organization = await db.organization.findUniqueOrThrow({
+          where: {
+            id: metadata.organizationId,
+          },
+        });
+        const rawEventsLimit = product.metadata?.eventsLimit;
+        const parsedEventsLimit =
+          typeof rawEventsLimit === 'number'
+            ? rawEventsLimit
+            : typeof rawEventsLimit === 'string'
+              ? Number(rawEventsLimit)
+              : Number.NaN;
+        const hasValidEventsLimit = Number.isFinite(parsedEventsLimit);
+        const subscriptionPeriodEventsLimit = hasValidEventsLimit
+          ? parsedEventsLimit
+          : organization.subscriptionPeriodEventsLimit;
 
-        if (!subscriptionPeriodEventsLimit) {
-          request.log.warn('No events limit found for product', { product });
+        if (!hasValidEventsLimit) {
+          request.log.warn(
+            { product },
+            'No valid eventsLimit on product, preserving existing organization limit'
+          );
         }
-
         // If we get a cancel event and we cant find it we should ignore it
         // Since we only have one subscription per organization but you can have several in polar
         // we dont want to override the existing subscription with a canceled one
@@ -168,12 +226,14 @@ export async function polarWebhook(
             where: {
               subscriptionCustomerId: event.data.customer.id,
               subscriptionId: event.data.id,
-              subscriptionStatus: 'active',
+              subscriptionStatus: {
+                in: ['active', 'past_due', 'unpaid'],
+              },
             },
           });
 
           if (!orgSubscription) {
-            return reply.status(202).send('OK');
+            return;
           }
         }
 
@@ -184,7 +244,7 @@ export async function polarWebhook(
           data: {
             subscriptionId: event.data.id,
             subscriptionCustomerId: event.data.customer.id,
-            subscriptionPriceId: event.data.priceId,
+            subscriptionPriceId: event.data.prices[0]?.id ?? null,
             subscriptionProductId: event.data.productId,
             subscriptionStatus: event.data.status,
             subscriptionStartsAt: event.data.currentPeriodStart,
@@ -198,36 +258,43 @@ export async function polarWebhook(
             subscriptionCreatedByUserId: metadata.userId,
             subscriptionInterval: event.data.recurringInterval,
             subscriptionPeriodEventsLimit,
+            subscriptionPeriodEventsCountExceededAt:
+              typeof subscriptionPeriodEventsLimit === 'number' &&
+              organization.subscriptionPeriodEventsCountExceededAt &&
+              typeof organization.subscriptionPeriodEventsLimit === 'number' &&
+              organization.subscriptionPeriodEventsLimit <
+                subscriptionPeriodEventsLimit
+                ? null
+                : undefined,
           },
         });
 
-        const projects = await db.project.findMany({
-          where: {
-            organizationId: metadata.organizationId,
-          },
-        });
-
-        for (const project of projects) {
-          await getOrganizationByProjectIdCached.clear(project.id);
-        }
+        await clearOrganizationCache(metadata.organizationId);
 
         await publishEvent('organization', 'subscription_updated', {
           organizationId: metadata.organizationId,
         });
 
-        break;
+        return;
+      }
+      default: {
+        request.log.info(
+          eventCtx,
+          'polar webhook: unhandled event type, acking'
+        );
       }
     }
+  });
 
-    reply.status(202).send('OK');
-  } catch (error) {
-    if (error instanceof PolarWebhookVerificationError) {
-      request.log.error('Polar webhook error', { error });
-      reply.status(403).send('');
-    }
-
-    throw error;
+  if (!handler.ok) {
+    request.log.error(
+      { err: handler.error, ...eventCtx },
+      `polar webhook: ${event.type} handler failed`
+    );
+    throw handler.error;
   }
+
+  return reply.status(202).send('OK');
 }
 
 function isToday(date: Date) {

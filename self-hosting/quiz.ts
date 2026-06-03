@@ -66,7 +66,7 @@ export interface DockerComposeFile {
       restart: string;
       ports: string[];
       volumes: string[];
-      depends_on: string[];
+      depends_on?: Record<string, { condition: string }> | string[];
     }
   >;
   volumes?: Record<string, unknown>;
@@ -104,11 +104,19 @@ function removeServiceFromDockerCompose(serviceName: string) {
 
   // filter depends_on
   Object.keys(dockerCompose.services).forEach((service) => {
-    if (dockerCompose.services[service]?.depends_on) {
-      // @ts-expect-error
-      dockerCompose.services[service].depends_on = dockerCompose.services[
-        service
-      ].depends_on.filter((dep) => dep !== serviceName);
+    const serviceConfig = dockerCompose.services[service];
+    if (serviceConfig?.depends_on) {
+      if (Array.isArray(serviceConfig.depends_on)) {
+        // Handle legacy array format
+        serviceConfig.depends_on = serviceConfig.depends_on.filter(
+          (dep) => dep !== serviceName,
+        );
+      } else {
+        // Handle new object format
+        if (serviceConfig.depends_on[serviceName]) {
+          delete serviceConfig.depends_on[serviceName];
+        }
+      }
     }
   });
 
@@ -141,11 +149,8 @@ function writeEnvFile(envs: EnvVars) {
     .replace('$REDIS_URL', envs.REDIS_URL)
     .replace('$DATABASE_URL', envs.DATABASE_URL)
     .replace('$DATABASE_URL_DIRECT', envs.DATABASE_URL)
-    .replace('$NEXT_PUBLIC_DASHBOARD_URL', stripTrailingSlash(envs.DOMAIN_NAME))
-    .replace(
-      '$NEXT_PUBLIC_API_URL',
-      `${stripTrailingSlash(envs.DOMAIN_NAME)}/api`,
-    )
+    .replace('$DASHBOARD_URL', stripTrailingSlash(envs.DOMAIN_NAME))
+    .replace('$API_URL', `${stripTrailingSlash(envs.DOMAIN_NAME)}/api`)
     .replace('$RESEND_API_KEY', envs.RESEND_API_KEY)
     .replace('$EMAIL_SENDER', envs.EMAIL_SENDER);
 

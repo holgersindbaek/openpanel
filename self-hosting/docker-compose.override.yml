@@ -1,12 +1,10 @@
 version: '3'
 services:
   op-dashboard:
+    image: op-dashboard-local
     build:
       context: ..
-      dockerfile: apps/dashboard/Dockerfile
-      args:
-        DATABASE_URL: "postgresql://postgres:postgres@op-db:5432/postgres?schema=public"
-        NEXT_PUBLIC_SELF_HOSTED: "true"
+      dockerfile: apps/start/Dockerfile
   
   op-api:
     image: op-api-local

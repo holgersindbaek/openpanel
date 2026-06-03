@@ -1,20 +1,17 @@
-import { parseQueryString } from '@/utils/parse-zod-query-string';
-import type { FastifyReply, FastifyRequest } from 'fastify';
-import { z } from 'zod';
-
-import { HttpError } from '@/utils/errors';
 import { DateTime } from '@openpanel/common';
 import type { GetEventListOptions } from '@openpanel/db';
 import {
+  ChartEngine,
   ClientType,
   db,
   getEventList,
-  getEventsCountCached,
+  getEventsCount,
   getSettingsForProject,
 } from '@openpanel/db';
-import { getChart } from '@openpanel/trpc/src/routers/chart.helpers';
-import { zChartEvent, zChartInput } from '@openpanel/validation';
-import { omit } from 'ramda';
+import { zChartEvent, zChartEventFilter, zReport } from '@openpanel/validation';
+import type { FastifyReply, FastifyRequest } from 'fastify';
+import { z } from 'zod';
+import { HttpError } from '@/utils/errors';
 
 async function getProjectId(
   request: FastifyRequest<{
@@ -22,8 +19,7 @@ async function getProjectId(
       project_id?: string;
       projectId?: string;
     };
-  }>,
-  reply: FastifyReply,
+  }>
 ) {
   let projectId = request.query.projectId || request.query.project_id;
 
@@ -64,7 +60,7 @@ async function getProjectId(
   return projectId;
 }
 
-const eventsScheme = z.object({
+export const eventsScheme = z.object({
   project_id: z.string().optional(),
   projectId: z.string().optional(),
   profileId: z.string().optional(),
@@ -73,10 +69,36 @@ const eventsScheme = z.object({
   end: z.coerce.string().optional(),
   page: z.coerce.number().optional().default(1),
   limit: z.coerce.number().optional().default(50),
+  filters: z
+    .preprocess((value) => {
+      if (value == null || value === '') return undefined;
+      if (Array.isArray(value)) return value;
+      if (typeof value === 'string') {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return undefined;
+        }
+      }
+      return value;
+    }, z.array(zChartEventFilter))
+    .optional(),
   includes: z
     .preprocess(
-      (arg) => (typeof arg === 'string' ? [arg] : arg),
-      z.array(z.string()),
+      (arg) => {
+        if (arg == null) {
+          return undefined;
+        }
+        if (Array.isArray(arg)) {
+          return arg;
+        }
+        if (typeof arg === 'string') {
+          const parts = arg.split(',').map((s) => s.trim()).filter(Boolean);
+          return parts;
+        }
+        return arg;
+      },
+      z.array(z.string())
     )
     .optional(),
 });
@@ -85,53 +107,37 @@ export async function events(
   request: FastifyRequest<{
     Querystring: z.infer<typeof eventsScheme>;
   }>,
-  reply: FastifyReply,
+  reply: FastifyReply
 ) {
-  const query = eventsScheme.safeParse(request.query);
-
-  if (query.success === false) {
-    return reply.status(400).send({
-      error: 'Bad Request',
-      message: 'Invalid query parameters',
-      details: query.error.errors,
-    });
-  }
-
-  const projectId = await getProjectId(request, reply);
-  const limit = query.data.limit;
-  const page = Math.max(query.data.page, 1);
+  const projectId = await getProjectId(request);
+  const { limit, page: rawPage, event, start, end, profileId, includes, filters } = request.query;
   const take = Math.max(Math.min(limit, 1000), 1);
-  const cursor = page - 1;
+  const cursor = Math.max(rawPage, 1) - 1;
   const options: GetEventListOptions = {
     projectId,
-    events: (Array.isArray(query.data.event)
-      ? query.data.event
-      : [query.data.event]
-    ).filter((s): s is string => typeof s === 'string'),
-    startDate: query.data.start ? new Date(query.data.start) : undefined,
-    endDate: query.data.end ? new Date(query.data.end) : undefined,
+    events: (Array.isArray(event) ? event : [event]).filter((s): s is string => typeof s === 'string'),
+    startDate: start ? new Date(start) : undefined,
+    endDate: end ? new Date(end) : undefined,
     cursor,
     take,
-    profileId: query.data.profileId,
+    profileId,
+    filters,
     select: {
       profile: false,
       meta: false,
-      ...query.data.includes?.reduce(
-        (acc, key) => ({ ...acc, [key]: true }),
-        {},
-      ),
+      ...includes?.reduce((acc, key) => ({ ...acc, [key]: true }), {}),
     },
   };
 
   const [data, totalCount] = await Promise.all([
     getEventList(options),
-    getEventsCountCached(omit(['cursor', 'take'], options)),
+    getEventsCount(options),
   ]);
 
   reply.send({
     meta: {
       count: data.length,
-      totalCount: totalCount,
+      totalCount,
       pages: Math.ceil(totalCount / options.take),
       current: cursor + 1,
     },
@@ -139,7 +145,7 @@ export async function events(
   });
 }
 
-const chartSchemeFull = zChartInput
+export const chartSchemeFull = zReport
   .pick({
     breakdowns: true,
     interval: true,
@@ -151,37 +157,48 @@ const chartSchemeFull = zChartInput
   .extend({
     project_id: z.string().optional(),
     projectId: z.string().optional(),
-    events: z.array(
-      z.object({
-        name: z.string(),
-        filters: zChartEvent.shape.filters.optional(),
-        segment: zChartEvent.shape.segment.optional(),
-        property: zChartEvent.shape.property.optional(),
-      }),
-    ),
+    series: z
+      .array(
+        z.object({
+          name: z.string(),
+          filters: zChartEvent.shape.filters.optional(),
+          segment: zChartEvent.shape.segment.optional(),
+          property: zChartEvent.shape.property.optional(),
+        })
+      )
+      .optional(),
+    // Backward compatibility - events will be migrated to series via preprocessing
+    events: z
+      .array(
+        z.object({
+          name: z.string(),
+          filters: zChartEvent.shape.filters.optional(),
+          segment: zChartEvent.shape.segment.optional(),
+          property: zChartEvent.shape.property.optional(),
+        })
+      )
+      .optional(),
   });
 
 export async function charts(
   request: FastifyRequest<{
-    Querystring: Record<string, string>;
+    Querystring: z.infer<typeof chartSchemeFull>;
   }>,
-  reply: FastifyReply,
+  reply: FastifyReply
 ) {
-  const query = chartSchemeFull.safeParse(parseQueryString(request.query));
-
-  if (query.success === false) {
-    return reply.status(400).send({
-      error: 'Bad Request',
-      message: 'Invalid query parameters',
-      details: query.error.errors,
-    });
-  }
-
-  const projectId = await getProjectId(request, reply);
+  const projectId = await getProjectId(request);
   const { timezone } = await getSettingsForProject(projectId);
-  const { events, ...rest } = query.data;
+  const { events, series, ...rest } = request.query;
 
-  return getChart({
+  // Use series if available, otherwise fall back to events (backward compat)
+  const eventSeries = (series ?? events ?? []).map((event: any) => ({
+    ...event,
+    type: event.type ?? 'event',
+    segment: event.segment ?? 'event',
+    filters: event.filters ?? [],
+  }));
+
+  return ChartEngine.execute({
     ...rest,
     startDate: rest.startDate
       ? DateTime.fromISO(rest.startDate)
@@ -194,11 +211,7 @@ export async function charts(
           .toFormat('yyyy-MM-dd HH:mm:ss')
       : undefined,
     projectId,
-    events: events.map((event) => ({
-      ...event,
-      segment: event.segment ?? 'event',
-      filters: event.filters ?? [],
-    })),
+    series: eventSeries,
     chartType: 'linear',
     metric: 'sum',
   });

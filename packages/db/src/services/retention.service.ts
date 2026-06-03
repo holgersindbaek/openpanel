@@ -1,4 +1,4 @@
-import { escape } from 'sqlstring';
+import sqlstring from 'sqlstring';
 
 import { TABLE_NAMES, chQuery } from '../clickhouse/client';
 
@@ -16,7 +16,7 @@ WITH
           profile_id,
           max(toWeek(created_at)) AS last_seen
       FROM ${TABLE_NAMES.events}
-      WHERE (project_id = ${escape(projectId)}) AND (profile_id != device_id)
+      WHERE (project_id = ${sqlstring.escape(projectId)}) AND (profile_id != device_id)
       GROUP BY profile_id
   ),
   n AS
@@ -25,7 +25,7 @@ WITH
           profile_id,
           min(toWeek(created_at)) AS first_seen
       FROM ${TABLE_NAMES.events}
-      WHERE (project_id = ${escape(projectId)}) AND (profile_id != device_id)
+      WHERE (project_id = ${sqlstring.escape(projectId)}) AND (profile_id != device_id)
       GROUP BY profile_id
   ),
   a AS
@@ -85,7 +85,7 @@ export function getRetentionSeries({ projectId }: IGetWeekRetentionInput) {
       AND toStartOfWeek(events.created_at) = toStartOfWeek(future_events.created_at - toIntervalWeek(1))
       AND future_events.profile_id != future_events.device_id
     WHERE 
-      project_id = ${escape(projectId)} 
+      project_id = ${sqlstring.escape(projectId)} 
       AND events.profile_id != events.device_id
     GROUP BY 1
     ORDER BY date ASC`;
@@ -122,11 +122,11 @@ export function getRollingActiveUsers({
       (
           SELECT *
           FROM ${TABLE_NAMES.dau_mv}
-          WHERE project_id = ${escape(projectId)}
+          WHERE project_id = ${sqlstring.escape(projectId)}
       )
       ARRAY JOIN range(${days}) AS n
     )
-    WHERE project_id = ${escape(projectId)}
+    WHERE project_id = ${sqlstring.escape(projectId)}
     GROUP BY date`;
 
   return chQuery<IServiceRetentionRollingActiveUsers>(sql);
@@ -141,7 +141,7 @@ export function getRetentionLastSeenSeries({
             max(created_at) AS last_active,
             profile_id
         FROM ${TABLE_NAMES.events}
-        WHERE (project_id = ${escape(projectId)}) AND (device_id != profile_id)
+        WHERE (project_id = ${sqlstring.escape(projectId)}) AND (device_id != profile_id)
         GROUP BY profile_id
     )
     SELECT
@@ -155,4 +155,64 @@ export function getRetentionLastSeenSeries({
     days: number;
     users: number;
   }>(sql);
+}
+
+export async function getRollingActiveUsersCore(input: {
+  projectId: string;
+  days: number;
+}) {
+  const data = await getRollingActiveUsers(input);
+  return {
+    window_days: input.days,
+    label:
+      input.days === 1
+        ? 'DAU'
+        : input.days === 7
+          ? 'WAU'
+          : input.days === 30
+            ? 'MAU'
+            : `${input.days}d active`,
+    series: data,
+  };
+}
+
+export async function getWeeklyRetentionSeriesCore(projectId: string) {
+  return getRetentionSeries({ projectId });
+}
+
+export async function getRetentionCohortCore(projectId: string) {
+  return getRetentionCohortTable({ projectId });
+}
+
+export async function getEngagementCore(projectId: string) {
+  const raw = await getRetentionLastSeenSeries({ projectId });
+
+  let active_0_7 = 0;
+  let active_8_14 = 0;
+  let active_15_30 = 0;
+  let active_31_60 = 0;
+  let churned_60_plus = 0;
+
+  for (const row of raw) {
+    if (row.days <= 7) active_0_7 += row.users;
+    else if (row.days <= 14) active_8_14 += row.users;
+    else if (row.days <= 30) active_15_30 += row.users;
+    else if (row.days <= 60) active_31_60 += row.users;
+    else churned_60_plus += row.users;
+  }
+
+  const total =
+    active_0_7 + active_8_14 + active_15_30 + active_31_60 + churned_60_plus;
+
+  return {
+    summary: {
+      total_identified_users: total,
+      active_last_7_days: active_0_7,
+      active_8_to_14_days: active_8_14,
+      active_15_to_30_days: active_15_30,
+      inactive_31_to_60_days: active_31_60,
+      churned_60_plus_days: churned_60_plus,
+    },
+    distribution: raw,
+  };
 }

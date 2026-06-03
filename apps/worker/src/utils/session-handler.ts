@@ -1,30 +1,85 @@
-import { getTime } from '@openpanel/common';
-import { type IServiceCreateEventPayload, createEvent } from '@openpanel/db';
+import type { IServiceCreateEventPayload } from '@openpanel/db';
 import {
   type EventsQueuePayloadCreateSessionEnd,
   sessionsQueue,
 } from '@openpanel/queue';
+import { LRUCache } from '@openpanel/redis';
 import type { Job } from 'bullmq';
-import { logger } from './logger';
+import { logger as baseLogger } from '@/utils/logger';
 
 export const SESSION_TIMEOUT = 1000 * 60 * 30;
+
+const CHANGE_DELAY_THROTTLE_MS = process.env.CHANGE_DELAY_THROTTLE_MS
+  ? Number.parseInt(process.env.CHANGE_DELAY_THROTTLE_MS, 10)
+  : 60_000; // 1 minute
+
+const CHANGE_DELAY_THROTTLE_MAP = new LRUCache<string, number>({
+  max: 100_000,
+  ttl: SESSION_TIMEOUT,
+});
+
+export type SessionEndJob = Job<EventsQueuePayloadCreateSessionEnd>;
+
+// Treats any existing session-end job as "session in progress" regardless of
+// state — avoids duplicate session_starts when the close job is mid-flight.
+export async function getActiveSessionEndJob(
+  projectId: string,
+  deviceId: string,
+): Promise<SessionEndJob | null> {
+  const jobId = getSessionEndJobId(projectId, deviceId);
+  const job = await sessionsQueue.getJob(jobId);
+  return (job as SessionEndJob | undefined) ?? null;
+}
+
+export async function extendSessionEndJob({
+  projectId,
+  deviceId,
+  job,
+}: {
+  projectId: string;
+  deviceId: string;
+  job?: SessionEndJob | null;
+}) {
+  const last = CHANGE_DELAY_THROTTLE_MAP.get(`${projectId}:${deviceId}`) ?? 0;
+  const isThrottled = Date.now() - last < CHANGE_DELAY_THROTTLE_MS;
+
+  if (isThrottled) {
+    return;
+  }
+
+  const resolvedJob =
+    job ?? (await getActiveSessionEndJob(projectId, deviceId));
+
+  if (!resolvedJob) {
+    return;
+  }
+
+  const state = await resolvedJob.getState();
+  if (state !== 'delayed') {
+    baseLogger.warn(
+      { jobId: resolvedJob.id, state },
+      'Session end job is not in delayed state, skipping extend',
+    );
+    return;
+  }
+
+  // Narrow TOCTOU window: state could flip from delayed → waiting between
+  // the getState() check above and this call.
+  try {
+    await resolvedJob.changeDelay(SESSION_TIMEOUT);
+    CHANGE_DELAY_THROTTLE_MAP.set(`${projectId}:${deviceId}`, Date.now());
+  } catch (error) {
+    baseLogger.warn(
+      { err: error, jobId: resolvedJob.id },
+      'Session end job moved out of delayed state during extend',
+    );
+  }
+}
 
 const getSessionEndJobId = (projectId: string, deviceId: string) =>
   `sessionEnd:${projectId}:${deviceId}`;
 
-export async function createSessionStart({
-  payload,
-}: {
-  payload: IServiceCreateEventPayload;
-}) {
-  return createEvent({
-    ...payload,
-    name: 'session_start',
-    createdAt: new Date(getTime(payload.createdAt) - 100),
-  });
-}
-
-export async function createSessionEndJob({
+export function createSessionEndJob({
   payload,
 }: {
   payload: IServiceCreateEventPayload;
@@ -43,128 +98,6 @@ export async function createSessionEndJob({
         type: 'exponential',
         delay: 200,
       },
-    },
+    }
   );
-}
-
-export async function getSessionEnd({
-  projectId,
-  currentDeviceId,
-  previousDeviceId,
-  profileId,
-}: {
-  projectId: string;
-  currentDeviceId: string;
-  previousDeviceId: string;
-  profileId: string;
-}) {
-  const sessionEnd = await getSessionEndJob({
-    projectId,
-    currentDeviceId,
-    previousDeviceId,
-  });
-
-  if (sessionEnd) {
-    // Hack: if session end job just got created, we want to give it a chance to complete
-    // So the order is correct
-    if (sessionEnd.job.timestamp > Date.now() - 50) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-
-    const existingSessionIsAnonymous =
-      sessionEnd.job.data.payload.profileId ===
-      sessionEnd.job.data.payload.deviceId;
-
-    const eventIsIdentified =
-      profileId && sessionEnd.job.data.payload.profileId !== profileId;
-
-    if (existingSessionIsAnonymous && eventIsIdentified) {
-      await sessionEnd.job.updateData({
-        ...sessionEnd.job.data,
-        payload: {
-          ...sessionEnd.job.data.payload,
-          profileId,
-        },
-      });
-    }
-
-    await sessionEnd.job.changeDelay(SESSION_TIMEOUT);
-    return sessionEnd.job.data.payload;
-  }
-
-  return null;
-}
-
-export async function getSessionEndJob(args: {
-  projectId: string;
-  currentDeviceId: string;
-  previousDeviceId: string;
-  retryCount?: number;
-}): Promise<{
-  deviceId: string;
-  job: Job<EventsQueuePayloadCreateSessionEnd>;
-} | null> {
-  const { retryCount = 0 } = args;
-
-  if (retryCount >= 6) {
-    throw new Error('Failed to get session end');
-  }
-
-  async function handleJobStates(
-    job: Job<EventsQueuePayloadCreateSessionEnd>,
-    deviceId: string,
-  ): Promise<{
-    deviceId: string;
-    job: Job<EventsQueuePayloadCreateSessionEnd>;
-  } | null> {
-    const state = await job.getState();
-    if (state !== 'delayed') {
-      logger.info(`[session-handler] Session end job is in "${state}" state`, {
-        state,
-        retryCount,
-        jobTimestamp: new Date(job.timestamp).toISOString(),
-        jobDelta: Date.now() - job.timestamp,
-        jobId: job.id,
-        reqId: job.data.payload.properties?.__reqId ?? 'unknown',
-        payload: job.data.payload,
-      });
-    }
-
-    if (state === 'delayed' || state === 'waiting') {
-      return { deviceId, job };
-    }
-
-    if (state === 'active') {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      return getSessionEndJob({
-        ...args,
-        retryCount: retryCount + 1,
-      });
-    }
-
-    if (state === 'completed') {
-      await job.remove();
-    }
-
-    return null;
-  }
-
-  // Check current device job
-  const currentJob = await sessionsQueue.getJob(
-    getSessionEndJobId(args.projectId, args.currentDeviceId),
-  );
-  if (currentJob) {
-    return await handleJobStates(currentJob, args.currentDeviceId);
-  }
-
-  // Check previous device job
-  const previousJob = await sessionsQueue.getJob(
-    getSessionEndJobId(args.projectId, args.previousDeviceId),
-  );
-  if (previousJob) {
-    return await handleJobStates(previousJob, args.previousDeviceId);
-  }
-
-  // Create session
-  return null;
 }

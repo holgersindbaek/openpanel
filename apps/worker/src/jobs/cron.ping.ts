@@ -1,6 +1,10 @@
 import { TABLE_NAMES, chQuery } from '@openpanel/db';
 
 export async function ping() {
+  if (process.env.DISABLE_PING) {
+    return;
+  }
+
   const [res] = await chQuery<{ count: number }>(
     `SELECT COUNT(*) as count FROM ${TABLE_NAMES.events}`,
   );
@@ -12,7 +16,8 @@ export async function ping() {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        domain: process.env.NEXT_PUBLIC_DASHBOARD_URL,
+        domain:
+          process.env.DASHBOARD_URL || process.env.NEXT_PUBLIC_DASHBOARD_URL,
         count: res?.count,
       }),
     });

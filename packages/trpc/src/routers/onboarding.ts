@@ -8,7 +8,6 @@ import { zOnboardingProject } from '@openpanel/validation';
 
 import { hashPassword } from '@openpanel/common/server';
 import { addDays } from 'date-fns';
-import { addTrialEndingSoonJob, miscQueue } from '../../../queue';
 import { createTRPCRouter, protectedProcedure, publicProcedure } from '../trpc';
 
 async function createOrGetOrganization(
@@ -30,18 +29,9 @@ async function createOrGetOrganization(
         subscriptionEndsAt: addDays(new Date(), TRIAL_DURATION_IN_DAYS),
         subscriptionStatus: 'trialing',
         timezone: input.timezone,
+        onboarding: '',
       },
     });
-
-    if (
-      process.env.NEXT_PUBLIC_SELF_HOSTED !== 'true' &&
-      !process.env.SELF_HOSTED
-    ) {
-      await addTrialEndingSoonJob(
-        organization.id,
-        1000 * 60 * 60 * 24 * TRIAL_DURATION_IN_DAYS * 0.9,
-      );
-    }
 
     return organization;
   }
@@ -64,7 +54,6 @@ export const onboardingRouter = createTRPCRouter({
     if (members.length > 0) {
       return {
         canSkip: true,
-        url: `/${members[0]?.organizationId}`,
       };
     }
 
@@ -77,11 +66,10 @@ export const onboardingRouter = createTRPCRouter({
     if (projectAccess.length > 0) {
       return {
         canSkip: true,
-        url: `/${projectAccess[0]?.organizationId}/${projectAccess[0]?.projectId}`,
       };
     }
 
-    return { canSkip: false, url: null };
+    return { canSkip: false };
   }),
   project: protectedProcedure
     .input(zOnboardingProject)

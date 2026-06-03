@@ -1,4 +1,4 @@
-ARG NODE_VERSION=20.15.1
+ARG NODE_VERSION=22.20.0
 
 FROM node:${NODE_VERSION}-slim AS base
 
@@ -35,9 +35,13 @@ COPY packages/redis/package.json ./packages/redis/
 COPY packages/queue/package.json ./packages/queue/
 COPY packages/logger/package.json ./packages/logger/
 COPY packages/common/package.json ./packages/common/
+COPY packages/importer/package.json ./packages/importer/
+COPY packages/payments/package.json ./packages/payments/
 COPY packages/constants/package.json ./packages/constants/
 COPY packages/validation/package.json ./packages/validation/
-COPY packages/integrations/package.json packages/integrations/
+COPY packages/integrations/package.json ./packages/integrations/
+COPY packages/js-runtime/package.json ./packages/js-runtime/
+COPY patches ./patches
 
 # BUILD
 FROM base AS build
@@ -79,11 +83,16 @@ COPY --from=build /app/packages/geo ./packages/geo
 COPY --from=build /app/packages/json ./packages/json
 COPY --from=build /app/packages/email ./packages/email
 COPY --from=build /app/packages/redis ./packages/redis
-COPY --from=build /app/packages/logger ./packages/logger
 COPY --from=build /app/packages/queue ./packages/queue
+COPY --from=build /app/packages/logger ./packages/logger
 COPY --from=build /app/packages/common ./packages/common
+COPY --from=build /app/packages/importer ./packages/importer
+COPY --from=build /app/packages/payments ./packages/payments
+COPY --from=build /app/packages/constants ./packages/constants
 COPY --from=build /app/packages/validation ./packages/validation
 COPY --from=build /app/packages/integrations ./packages/integrations
+COPY --from=build /app/packages/js-runtime ./packages/js-runtime
+COPY --from=build /app/tooling/typescript ./tooling/typescript
 RUN pnpm db:codegen
 
 WORKDIR /app/apps/worker

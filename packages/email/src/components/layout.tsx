@@ -7,15 +7,16 @@ import {
   Section,
   Tailwind,
 } from '@react-email/components';
-// biome-ignore lint/style/useImportType: resend needs React
+// biome-ignore lint/style/useImportType: <explanation>
 import React from 'react';
 import { Footer } from './footer';
 
 type Props = {
   children: React.ReactNode;
+  unsubscribeUrl?: string;
 };
 
-export function Layout({ children }: Props) {
+export function Layout({ children, unsubscribeUrl }: Props) {
   return (
     <Html>
       <Tailwind>
@@ -57,7 +58,7 @@ export function Layout({ children }: Props) {
               />
             </Section>
             <Section className="p-6">{children}</Section>
-            <Footer />
+            <Footer unsubscribeUrl={unsubscribeUrl} />
           </Container>
         </Body>
       </Tailwind>

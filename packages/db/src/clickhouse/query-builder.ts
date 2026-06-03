@@ -1,6 +1,6 @@
 import type { ClickHouseClient, ResponseJSON } from '@clickhouse/client';
 import type { IInterval } from '@openpanel/validation';
-import { escape } from 'sqlstring';
+import sqlstring from 'sqlstring';
 
 type SqlValue = string | number | boolean | Date | null | Expression;
 type SqlParam = SqlValue | SqlValue[];
@@ -43,7 +43,7 @@ class Expression {
 }
 
 export class Query<T = any> {
-  private _select: string[] = [];
+  private _select: (string | Expression)[] = [];
   private _except: string[] = [];
   private _from?: string | Expression;
   private _where: WhereCondition[] = [];
@@ -66,6 +66,7 @@ export class Query<T = any> {
     alias?: string;
   }[] = [];
   private _skipNext = false;
+  private _rawJoins: string[] = [];
   private _fill?: {
     from: string | Date;
     to: string | Date;
@@ -73,25 +74,30 @@ export class Query<T = any> {
   };
   private _transform?: Record<string, (item: T) => any>;
   private _union?: Query;
-  private _dateRegex = /\d{4}-\d{2}-\d{2}([\s\:\d\.]+)?/g;
+  private _dateRegex = /\d{4}-\d{2}-\d{2}([\s:\d.]+)?/g;
+  private _dateValueRegex = /^(?:[a-zA-Z]\w*\()?\d{4}-\d{2}-\d{2}(?:[\s:\d.]+)?\)?$/;
   constructor(
     private client: ClickHouseClient,
-    private timezone: string,
+    private timezone: string
   ) {}
 
   // Select methods
   select<U>(
-    columns: (string | null | undefined | false)[],
-    type: 'merge' | 'replace' = 'replace',
+    columns: (string | Expression | null | undefined | false)[],
+    type: 'merge' | 'replace' = 'replace'
   ): Query<U> {
-    if (this._skipNext) return this as unknown as Query<U>;
+    if (this._skipNext) {
+      return this as unknown as Query<U>;
+    }
     if (type === 'merge') {
       this._select = [
         ...this._select,
-        ...columns.filter((col): col is string => Boolean(col)),
+        ...columns.filter((col): col is string | Expression => Boolean(col)),
       ];
     } else {
-      this._select = columns.filter((col): col is string => Boolean(col));
+      this._select = columns.filter((col): col is string | Expression =>
+        Boolean(col)
+      );
     }
     return this as unknown as Query<U>;
   }
@@ -120,24 +126,30 @@ export class Query<T = any> {
 
   // Where methods
   private escapeValue(value: SqlParam): string {
-    if (value === null) return 'NULL';
-    if (value instanceof Expression) return `(${value.toString()})`;
+    if (value === null) {
+      return 'NULL';
+    }
+    if (value instanceof Expression) {
+      return `(${value.toString()})`;
+    }
     if (Array.isArray(value)) {
       return `(${value.map((v) => this.escapeValue(v)).join(', ')})`;
     }
 
     if (
-      (typeof value === 'string' && this._dateRegex.test(value)) ||
+      (typeof value === 'string' && this._dateValueRegex.test(value)) ||
       value instanceof Date
     ) {
       return this.escapeDate(value);
     }
 
-    return escape(value);
+    return sqlstring.escape(value);
   }
 
   where(column: string, operator: Operator, value?: SqlParam): this {
-    if (this._skipNext) return this;
+    if (this._skipNext) {
+      return this;
+    }
     const condition = this.buildCondition(column, operator, value);
     this._where.push({ condition, operator: 'AND' });
     return this;
@@ -146,7 +158,7 @@ export class Query<T = any> {
   public buildCondition(
     column: string,
     operator: Operator,
-    value?: SqlParam,
+    value?: SqlParam
   ): string {
     switch (operator) {
       case 'IS NULL':
@@ -160,7 +172,7 @@ export class Query<T = any> {
         throw new Error('BETWEEN operator requires an array of two values');
       case 'IN':
       case 'NOT IN':
-        if (!Array.isArray(value) && !(value instanceof Expression)) {
+        if (!(Array.isArray(value) || value instanceof Expression)) {
           throw new Error(`${operator} operator requires an array value`);
         }
         return `${column} ${operator} ${this.escapeValue(value)}`;
@@ -201,6 +213,13 @@ export class Query<T = any> {
     return this;
   }
 
+  rawHaving(condition: string): this {
+    if (condition) {
+      this._having.push({ condition, operator: 'AND' });
+    }
+    return this;
+  }
+
   andHaving(column: string, operator: Operator, value: SqlParam): this {
     const condition = this.buildCondition(column, operator, value);
     this._having.push({ condition, operator: 'AND' });
@@ -215,7 +234,9 @@ export class Query<T = any> {
 
   // Order by methods
   orderBy(column: string, direction: 'ASC' | 'DESC' = 'ASC'): this {
-    if (this._skipNext) return this;
+    if (this._skipNext) {
+      return this;
+    }
     this._orderBy.push({ column, direction });
     return this;
   }
@@ -247,22 +268,27 @@ export class Query<T = any> {
   }
 
   // Fill
-  fill(from: string | Date, to: string | Date, step: string): this {
+  fill(
+    from: string | Date | Expression,
+    to: string | Date | Expression,
+    step: string | Expression
+  ): this {
     this._fill = {
-      from: this.escapeDate(from),
-      to: this.escapeDate(to),
-      step: step,
+      from:
+        from instanceof Expression ? from.toString() : this.escapeDate(from),
+      to: to instanceof Expression ? to.toString() : this.escapeDate(to),
+      step: step instanceof Expression ? step.toString() : step,
     };
     return this;
   }
 
   private escapeDate(value: string | Date): string {
     if (value instanceof Date) {
-      return escape(clix.datetime(value));
+      return sqlstring.escape(clix.datetime(value));
     }
 
     return value.replaceAll(this._dateRegex, (match) => {
-      return escape(match);
+      return sqlstring.escape(match);
     });
   }
 
@@ -274,7 +300,7 @@ export class Query<T = any> {
   innerJoin(
     table: string | Expression,
     condition: string,
-    alias?: string,
+    alias?: string
   ): this {
     return this.joinWithType('INNER', table, condition, alias);
   }
@@ -282,7 +308,7 @@ export class Query<T = any> {
   leftJoin(
     table: string | Expression | Query,
     condition: string,
-    alias?: string,
+    alias?: string
   ): this {
     return this.joinWithType('LEFT', table, condition, alias);
   }
@@ -290,7 +316,7 @@ export class Query<T = any> {
   leftAnyJoin(
     table: string | Expression | Query,
     condition: string,
-    alias?: string,
+    alias?: string
   ): this {
     return this.joinWithType('LEFT ANY', table, condition, alias);
   }
@@ -298,7 +324,7 @@ export class Query<T = any> {
   rightJoin(
     table: string | Expression,
     condition: string,
-    alias?: string,
+    alias?: string
   ): this {
     return this.joinWithType('RIGHT', table, condition, alias);
   }
@@ -306,7 +332,7 @@ export class Query<T = any> {
   fullJoin(
     table: string | Expression,
     condition: string,
-    alias?: string,
+    alias?: string
   ): this {
     return this.joinWithType('FULL', table, condition, alias);
   }
@@ -315,13 +341,21 @@ export class Query<T = any> {
     return this.joinWithType('CROSS', table, '', alias);
   }
 
+  rawJoin(sql: string): this {
+    if (this._skipNext) return this;
+    this._rawJoins.push(sql);
+    return this;
+  }
+
   private joinWithType(
     type: JoinType,
     table: string | Expression | Query,
     condition: string,
-    alias?: string,
+    alias?: string
   ): this {
-    if (this._skipNext) return this;
+    if (this._skipNext) {
+      return this;
+    }
     this._joins.push({
       type,
       table,
@@ -367,7 +401,14 @@ export class Query<T = any> {
     if (this._select.length > 0) {
       parts.push(
         'SELECT',
-        this._select.map((col) => this.escapeDate(col)).join(', '),
+        this._select
+          // Important: Expressions are treated as raw SQL; do not run escapeDate()
+          // on them, otherwise any embedded date strings get double-escaped
+          // (e.g. ''2025-12-16 23:59:59'') which ClickHouse rejects.
+          .map((col) =>
+            col instanceof Expression ? col.toString() : this.escapeDate(col)
+          )
+          .join(', ')
       );
     } else {
       parts.push('SELECT *');
@@ -390,8 +431,12 @@ export class Query<T = any> {
         const aliasClause = join.alias ? ` ${join.alias} ` : ' ';
         const conditionStr = join.condition ? `ON ${join.condition}` : '';
         parts.push(
-          `${join.type} JOIN ${join.table instanceof Query ? `(${join.table.toSQL()})` : join.table instanceof Expression ? `(${join.table.toString()})` : join.table}${aliasClause}${conditionStr}`,
+          `${join.type} JOIN ${join.table instanceof Query ? `(${join.table.toSQL()})` : join.table instanceof Expression ? `(${join.table.toString()})` : join.table}${aliasClause}${conditionStr}`
         );
+      });
+      // Add raw joins (e.g. ARRAY JOIN)
+      this._rawJoins.forEach((join) => {
+        parts.push(join);
       });
     }
 
@@ -503,7 +548,10 @@ export class Query<T = any> {
   // Execution methods
   async execute(): Promise<T[]> {
     const query = this.buildQuery();
-    console.log('query', query);
+    // console.log(
+    //   'query',
+    //   `${query.replaceAll('\n', ' ').replaceAll('\t', ' ').replaceAll('\r', ' ')} SETTINGS session_timezone = '${this.timezone}'`,
+    // );
 
     const result = await this.client.query({
       query,
@@ -550,7 +598,9 @@ export class Query<T = any> {
 
   // Add merge method
   merge(query: Query): this {
-    if (this._skipNext) return this;
+    if (this._skipNext) {
+      return this;
+    }
 
     this._from = query._from;
 
@@ -566,6 +616,7 @@ export class Query<T = any> {
 
     // Merge JOINS
     this._joins = [...this._joins, ...query._joins];
+    this._rawJoins = [...this._rawJoins, ...query._rawJoins];
 
     // Merge settings
     this._settings = { ...this._settings, ...query._settings };
@@ -597,7 +648,7 @@ export class WhereGroupBuilder {
 
   constructor(
     private query: Query,
-    private groupOperator: 'AND' | 'OR',
+    private groupOperator: 'AND' | 'OR'
   ) {}
 
   where(column: string, operator: Operator, value?: SqlParam): this {
@@ -672,19 +723,17 @@ clix.toStartOf = (node: string, interval: IInterval, timezone?: string) => {
       return `toStartOfDay(${node})`;
     }
     case 'week': {
-      // Does not respect timezone settings (session_timezone) so we need to pass it manually
-      return `toStartOfWeek(${node}${timezone ? `, 1, '${timezone}'` : ''})`;
+      return `toStartOfWeek(toDateTime(${node}))`;
     }
     case 'month': {
-      // Does not respect timezone settings (session_timezone) so we need to pass it manually
-      return `toStartOfMonth(${node}${timezone ? `, '${timezone}'` : ''})`;
+      return `toStartOfMonth(toDateTime(${node}))`;
     }
   }
 };
 clix.toStartOfInterval = (
   node: string,
   interval: IInterval,
-  origin: string | Date,
+  origin: string | Date
 ) => {
   switch (interval) {
     case 'minute': {
@@ -725,6 +774,7 @@ clix.toInterval = (node: string, interval: IInterval) => {
 };
 clix.toDate = (node: string, interval: IInterval) => {
   switch (interval) {
+    case 'day':
     case 'week':
     case 'month': {
       return `toDate(${node})`;

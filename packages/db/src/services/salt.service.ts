@@ -1,52 +1,31 @@
 import { generateSalt } from '@openpanel/common/server';
 
-import { getRedisCache } from '@openpanel/redis';
+import { cacheable } from '@openpanel/redis';
 import { db } from '../prisma-client';
 
-export async function getCurrentSalt() {
-  const salt = await db.salt.findFirst({
-    orderBy: {
-      createdAt: 'desc',
-    },
-  });
+export const getSalts = cacheable(
+  'op:salt',
+  async () => {
+    const [curr, prev] = await db.salt.findMany({
+      orderBy: {
+        createdAt: 'desc',
+      },
+      take: 2,
+    });
 
-  if (!salt) {
-    throw new Error('No salt found');
-  }
+    if (!curr) {
+      throw new Error('No salt found');
+    }
 
-  return salt.salt;
-}
+    const salts = {
+      current: curr.salt,
+      previous: prev?.salt ?? curr.salt,
+    };
 
-export async function getSalts() {
-  const cache = await getRedisCache().get('op:salt');
-  if (cache) {
-    return JSON.parse(cache);
-  }
-
-  const [curr, prev] = await db.salt.findMany({
-    orderBy: {
-      createdAt: 'desc',
-    },
-    take: 2,
-  });
-
-  if (!curr) {
-    throw new Error('No salt found');
-  }
-
-  if (!prev) {
-    throw new Error('No salt found');
-  }
-
-  const salts = {
-    current: curr.salt,
-    previous: prev.salt,
-  };
-
-  await getRedisCache().set('op:salt', JSON.stringify(salts), 'EX', 60 * 10);
-
-  return salts;
-}
+    return salts;
+  },
+  60 * 5,
+);
 
 export async function createInitialSalts() {
   const MAX_RETRIES = 5;

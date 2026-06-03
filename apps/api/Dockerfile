@@ -1,4 +1,4 @@
-ARG NODE_VERSION=20.15.1
+ARG NODE_VERSION=22.20.0
 
 FROM node:${NODE_VERSION}-slim AS base
 
@@ -29,6 +29,7 @@ COPY apps/api/package.json ./apps/api/
 # Packages
 COPY packages/db/package.json packages/db/
 COPY packages/geo/package.json packages/geo/
+COPY packages/mcp/package.json packages/mcp/
 COPY packages/trpc/package.json packages/trpc/
 COPY packages/auth/package.json packages/auth/
 COPY packages/json/package.json packages/json/
@@ -38,11 +39,11 @@ COPY packages/redis/package.json packages/redis/
 COPY packages/logger/package.json packages/logger/
 COPY packages/common/package.json packages/common/
 COPY packages/payments/package.json packages/payments/
-COPY packages/sdks/sdk/package.json packages/sdks/sdk/
 COPY packages/constants/package.json packages/constants/
 COPY packages/validation/package.json packages/validation/
 COPY packages/integrations/package.json packages/integrations/
-COPY packages/sdks/sdk/package.json packages/sdks/sdk/
+COPY packages/js-runtime/package.json packages/js-runtime/
+COPY patches ./patches
 
 # BUILD
 FROM base AS build
@@ -66,6 +67,8 @@ RUN pnpm codegen && \
 # PROD
 FROM base AS prod
 
+ENV npm_config_build_from_source=true
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     make \
@@ -75,12 +78,14 @@ WORKDIR /app
 COPY --from=build /app/package.json ./
 COPY --from=build /app/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile --prod && \
+    pnpm rebuild && \
     pnpm store prune
 
 # FINAL
 FROM base AS runner
 
 ENV NODE_ENV=production
+ENV npm_config_build_from_source=true
 
 WORKDIR /app
 
@@ -93,6 +98,7 @@ COPY --from=build /app/apps/api ./apps/api
 # Packages
 COPY --from=build /app/packages/db ./packages/db
 COPY --from=build /app/packages/geo ./packages/geo
+COPY --from=build /app/packages/mcp ./packages/mcp
 COPY --from=build /app/packages/auth ./packages/auth
 COPY --from=build /app/packages/trpc ./packages/trpc
 COPY --from=build /app/packages/json ./packages/json
@@ -102,14 +108,20 @@ COPY --from=build /app/packages/redis ./packages/redis
 COPY --from=build /app/packages/logger ./packages/logger
 COPY --from=build /app/packages/common ./packages/common
 COPY --from=build /app/packages/payments ./packages/payments
-COPY --from=build /app/packages/sdks/sdk ./packages/sdks/sdk
 COPY --from=build /app/packages/constants ./packages/constants
 COPY --from=build /app/packages/validation ./packages/validation
 COPY --from=build /app/packages/integrations ./packages/integrations
+COPY --from=build /app/packages/js-runtime ./packages/js-runtime
+COPY --from=build /app/tooling/typescript ./tooling/typescript
 RUN pnpm db:codegen
 
 WORKDIR /app/apps/api
 
+# Drop a diagnostic report on fatal errors / SIGUSR2 so the next native
+# segfault (exit 139) leaves a stack we can read. Override per-environment
+# by setting NODE_OPTIONS in the swarm stack file.
+ENV NODE_OPTIONS="--report-on-fatalerror --report-on-signal --report-directory=/tmp"
+
 EXPOSE 3000
 
-CMD ["pnpm", "start"]
+CMD ["node", "dist/index.js"]

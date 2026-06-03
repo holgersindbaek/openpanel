@@ -1,83 +1,79 @@
-import { round } from '@openpanel/common';
-import { TABLE_NAMES, chQuery, db } from '@openpanel/db';
-import { eventsQueue } from '@openpanel/queue';
+import { tryCatch } from '@openpanel/common';
+import { chQuery, db } from '@openpanel/db';
 import { getRedisCache } from '@openpanel/redis';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-
-async function withTimings<T>(promise: Promise<T>) {
-  const time = performance.now();
-  try {
-    const data = await promise;
-    return {
-      time: round(performance.now() - time, 2),
-      data,
-    } as const;
-  } catch (e) {
-    return null;
-  }
-}
+import { isShuttingDown } from '@/utils/graceful-shutdown';
 
 export async function healthcheck(
   request: FastifyRequest,
-  reply: FastifyReply,
+  reply: FastifyReply
 ) {
-  if (process.env.DISABLE_HEALTHCHECK) {
-    return reply.status(200).send({
-      ok: true,
-    });
-  }
-  const redisRes = await withTimings(getRedisCache().ping());
-  const dbRes = await withTimings(db.project.findFirst());
-  const queueRes = await withTimings(eventsQueue.getCompleted());
-  const chRes = await withTimings(
-    chQuery(
-      `SELECT * FROM ${TABLE_NAMES.events} WHERE created_at > now() - INTERVAL 10 MINUTE LIMIT 1`,
-    ),
-  );
-  const status = redisRes && dbRes && queueRes && chRes ? 200 : 500;
+  const [redisResult, dbResult, chResult] = await Promise.all([
+    tryCatch(async () => (await getRedisCache().ping()) === 'PONG'),
+    tryCatch(async () => !!(await db.$executeRaw`SELECT 1`)),
+    tryCatch(async () => (await chQuery('SELECT 1')).length > 0),
+  ]);
 
-  reply.status(status).send({
-    redis: redisRes
-      ? {
-          ok: redisRes.data === 'PONG',
-          time: `${redisRes.time}ms`,
-        }
-      : null,
-    db: dbRes
-      ? {
-          ok: !!dbRes.data,
-          time: `${dbRes.time}ms`,
-        }
-      : null,
-    queue: queueRes
-      ? {
-          ok: !!queueRes.data,
-          time: `${queueRes.time}ms`,
-        }
-      : null,
-    ch: chRes
-      ? {
-          ok: !!chRes.data,
-          time: `${chRes.time}ms`,
-        }
-      : null,
+  const dependencies = {
+    redis: redisResult.ok && redisResult.data,
+    db: dbResult.ok && dbResult.data,
+    ch: chResult.ok && chResult.data,
+  };
+  const dependencyErrors = {
+    redis: redisResult.error?.message,
+    db: dbResult.error?.message,
+    ch: chResult.error?.message,
+  };
+
+  const failedDependencies = Object.entries(dependencies)
+    .filter(([, ok]) => !ok)
+    .map(([name]) => name);
+  const workingDependencies = Object.entries(dependencies)
+    .filter(([, ok]) => ok)
+    .map(([name]) => name);
+
+  const status = failedDependencies.length === 0 ? 200 : 503;
+
+  if (status === 200) {
+    request.log.debug(
+      {
+        workingDependencies,
+        failedDependencies,
+        dependencies,
+      },
+      'healthcheck passed'
+    );
+  } else {
+    request.log.warn(
+      {
+        workingDependencies,
+        failedDependencies,
+        dependencies,
+        dependencyErrors,
+      },
+      'healthcheck failed'
+    );
+  }
+
+  return reply.status(status).send({
+    ready: status === 200,
+    ...dependencies,
+    failedDependencies,
+    workingDependencies,
   });
 }
 
-export async function healthcheckQueue(
-  request: FastifyRequest,
-  reply: FastifyReply,
-) {
-  const count = await eventsQueue.getWaitingCount();
-  if (count > 40) {
-    reply.status(500).send({
-      ok: false,
-      count,
-    });
-  } else {
-    reply.status(200).send({
-      ok: true,
-      count,
-    });
+// Kubernetes liveness — shallow, event loop only.
+export async function liveness(_request: FastifyRequest, reply: FastifyReply) {
+  return reply.status(200).send({ live: true });
+}
+
+// Kubernetes readiness — shallow + shutdown-aware. Dependency health lives on
+// /healthcheck so a downstream blip cannot trigger mass pod restarts.
+export async function readiness(_request: FastifyRequest, reply: FastifyReply) {
+  if (isShuttingDown()) {
+    return reply.status(503).send({ ready: false, reason: 'shutting down' });
   }
+
+  return reply.status(200).send({ ready: true });
 }

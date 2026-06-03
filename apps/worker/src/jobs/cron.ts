@@ -1,11 +1,15 @@
 import type { Job } from 'bullmq';
 
-import { eventBuffer, profileBuffer, sessionBuffer } from '@openpanel/db';
+import { eventBuffer, groupBuffer, profileBackfillBuffer, profileBuffer, replayBuffer, sessionBuffer } from '@openpanel/db';
 import type { CronQueuePayload } from '@openpanel/queue';
 
-import { deleteProjects } from './cron.delete-projects';
+import { cohortRefreshCronJob } from './cron.cohort-refresh';
+import { jobdeleteProjects } from './cron.delete-projects';
+import { gscSyncAllJob } from './gsc';
+import { onboardingJob } from './cron.onboarding';
 import { ping } from './cron.ping';
 import { salt } from './cron.salt';
+import { insightsDailyJob } from './insights';
 
 export async function cronJob(job: Job<CronQueuePayload>) {
   switch (job.data.type) {
@@ -13,19 +17,40 @@ export async function cronJob(job: Job<CronQueuePayload>) {
       return await salt();
     }
     case 'flushEvents': {
-      return await eventBuffer.tryFlush();
+      return await eventBuffer.tryFlush({ trigger: 'cron' });
     }
     case 'flushProfiles': {
-      return await profileBuffer.tryFlush();
+      return await profileBuffer.tryFlush({ trigger: 'cron' });
     }
     case 'flushSessions': {
-      return await sessionBuffer.tryFlush();
+      return await sessionBuffer.tryFlush({ trigger: 'cron' });
+    }
+    case 'flushProfileBackfill': {
+      return await profileBackfillBuffer.tryFlush({ trigger: 'cron' });
+    }
+    case 'flushReplay': {
+      return await replayBuffer.tryFlush({ trigger: 'cron' });
+    }
+    case 'flushGroups': {
+      return await groupBuffer.tryFlush({ trigger: 'cron' });
     }
     case 'ping': {
       return await ping();
     }
     case 'deleteProjects': {
-      return await deleteProjects(job);
+      return await jobdeleteProjects(job);
+    }
+    case 'insightsDaily': {
+      return await insightsDailyJob(job);
+    }
+    case 'onboarding': {
+      return await onboardingJob(job);
+    }
+    case 'gscSync': {
+      return await gscSyncAllJob();
+    }
+    case 'cohortRefresh': {
+      return await cohortRefreshCronJob();
     }
   }
 }

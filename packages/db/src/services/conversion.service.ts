@@ -1,12 +1,19 @@
 import { NOT_SET_VALUE } from '@openpanel/constants';
-import type { IChartInput } from '@openpanel/validation';
+import type { IReportInput } from '@openpanel/validation';
 import { omit } from 'ramda';
+import sqlstring from 'sqlstring';
 import { TABLE_NAMES, ch } from '../clickhouse/client';
 import { clix } from '../clickhouse/query-builder';
 import {
+  buildInlineCohortJoin,
+  collectBreakdownCohortIds,
+  extractCohortId,
+  fetchCohortsMetadata,
   getEventFiltersWhereClause,
   getSelectPropertyKey,
+  isKnownEventField,
 } from './chart.service';
+import { onlyReportEvents } from './reports.service';
 
 export class ConversionService {
   constructor(private client: typeof ch) {}
@@ -15,17 +22,89 @@ export class ConversionService {
     projectId,
     startDate,
     endDate,
-    funnelGroup,
-    funnelWindow = 24,
-    events,
+    options,
+    series,
     breakdowns = [],
+    limit,
     interval,
-  }: Omit<IChartInput, 'range' | 'previous' | 'metric' | 'chartType'>) {
+    timezone,
+  }: Omit<IReportInput, 'range' | 'previous' | 'metric' | 'chartType'> & {
+    timezone: string;
+  }) {
+    const funnelOptions = options?.type === 'funnel' ? options : undefined;
+    const funnelGroup = funnelOptions?.funnelGroup;
+    const funnelWindow = funnelOptions?.funnelWindow ?? 24;
     const group = funnelGroup === 'profile_id' ? 'profile_id' : 'session_id';
-    const breakdownColumns = breakdowns.map(
-      (b, index) => `${getSelectPropertyKey(b.name)} as b_${index}`,
+
+    // Same guard as FunnelService / getChartSql — drop breakdowns whose name
+    // can't be resolved against the events schema.
+    breakdowns = breakdowns.filter((b) => isKnownEventField(b.name));
+
+    const cohortIds = collectBreakdownCohortIds(breakdowns);
+    const cohortMetadata = await fetchCohortsMetadata(cohortIds);
+    const cohortJoinsSql = cohortIds
+      .map((id) => buildInlineCohortJoin(id, projectId, 'events'))
+      .join(' ');
+
+    const breakdownExpressions = breakdowns.map((b) => {
+      const bId = extractCohortId(b.name);
+      const bName = bId ? cohortMetadata.get(bId)?.name : undefined;
+      return getSelectPropertyKey(b.name, projectId, bId ?? undefined, bName);
+    });
+    const breakdownSelects = breakdownExpressions.map(
+      (expr, index) => `${expr} as b_${index}`,
     );
-    const breakdownGroupBy = breakdowns.map((b, index) => `b_${index}`);
+    const breakdownGroupBy = breakdowns.map((_, index) => `b_${index}`);
+
+    // Check if any breakdown or filter uses profile fields
+    const profileBreakdowns = breakdowns.filter((b) =>
+      b.name.startsWith('profile.'),
+    );
+    const needsProfileJoin = profileBreakdowns.length > 0;
+
+    // Build profile JOIN clause if needed
+    let profileJoin = '';
+    if (needsProfileJoin) {
+      const profileFields = new Set<string>();
+      profileFields.add('id');
+
+      for (const b of profileBreakdowns) {
+        const fieldName = b.name.replace('profile.', '').split('.')[0];
+        if (fieldName === 'properties') {
+          profileFields.add('properties');
+        } else if (
+          [
+            'email',
+            'first_name',
+            'last_name',
+            'created_at',
+            'last_seen_at',
+          ].includes(fieldName!)
+        ) {
+          profileFields.add(fieldName!);
+        }
+      }
+
+      // Use simple column names (not aliased) so profile.properties works directly
+      const selectFields = Array.from(profileFields);
+
+      profileJoin = `LEFT ANY JOIN (
+        SELECT ${selectFields.join(', ')}
+        FROM ${TABLE_NAMES.profiles} FINAL
+        WHERE project_id = ${sqlstring.escape(projectId)}
+      ) as profile ON profile.id = profile_id`;
+    }
+
+    const events = onlyReportEvents(series);
+
+    // Check if any breakdown or filter uses group fields
+    const anyBreakdownOnGroup = breakdowns.some((b) =>
+      b.name.startsWith('group.'),
+    );
+    const anyFilterOnGroup = events.some((e) =>
+      e.filters?.some((f) => f.name.startsWith('group.')),
+    );
+    const needsGroupArrayJoin = anyBreakdownOnGroup || anyFilterOnGroup;
 
     if (events.length !== 2) {
       throw new Error('events must be an array of two events');
@@ -38,69 +117,63 @@ export class ConversionService {
     const eventA = events[0]!;
     const eventB = events[1]!;
     const whereA = Object.values(
-      getEventFiltersWhereClause(eventA.filters),
+      getEventFiltersWhereClause(eventA.filters, projectId),
     ).join(' AND ');
     const whereB = Object.values(
-      getEventFiltersWhereClause(eventB.filters),
+      getEventFiltersWhereClause(eventB.filters, projectId),
     ).join(' AND ');
 
-    const eventACte = clix(this.client)
-      .select([
-        `DISTINCT ${group}`,
-        'created_at AS a_time',
-        `${clix.toStartOf('created_at', interval)} AS event_day`,
-        ...breakdownColumns,
-      ])
-      .from(TABLE_NAMES.events)
-      .where('project_id', '=', projectId)
-      .where('name', '=', eventA.name)
-      .rawWhere(whereA)
-      .where('created_at', 'BETWEEN', [
-        clix.datetime(startDate),
-        clix.datetime(endDate),
-      ]);
+    const funnelWindowSeconds = funnelWindow * 3600;
 
-    const eventBCte = clix(this.client)
-      .select([group, 'created_at AS b_time'])
-      .from(TABLE_NAMES.events)
-      .where('project_id', '=', projectId)
-      .where('name', '=', eventB.name)
-      .rawWhere(whereB)
-      .where('created_at', 'BETWEEN', [
-        clix.datetime(startDate),
-        clix.datetime(endDate),
-      ]);
+    // Build funnel conditions
+    const conditionA = whereA
+      ? `(events.name = '${eventA.name}' AND ${whereA})`
+      : `events.name = '${eventA.name}'`;
+    const conditionB = whereB
+      ? `(events.name = '${eventB.name}' AND ${whereB})`
+      : `events.name = '${eventB.name}'`;
 
-    const query = clix(this.client)
-      .with('event_a', eventACte)
-      .with('event_b', eventBCte)
+    const groupJoin = needsGroupArrayJoin
+      ? `ARRAY JOIN groups AS _group_id LEFT ANY JOIN (SELECT id, name, type, properties FROM ${TABLE_NAMES.groups} FINAL WHERE project_id = ${sqlstring.escape(projectId)}) AS _g ON _g.id = _group_id`
+      : '';
+
+    // Use windowFunnel approach - single scan, no JOIN
+    const query = clix(this.client, timezone)
       .select<{
         event_day: string;
         total_first: number;
         conversions: number;
         conversion_rate_percentage: number;
-        [key: string]: string | number; // For breakdown columns
+        [key: string]: string | number;
       }>([
         'event_day',
         ...breakdownGroupBy,
-        'count(*) AS total_first',
-        'sum(if(conversion_time IS NOT NULL, 1, 0)) AS conversions',
-        'round(100.0 * sum(if(conversion_time IS NOT NULL, 1, 0)) / count(*), 2) AS conversion_rate_percentage',
+        `uniqExact(${group}) AS total_first`,
+        'countIf(steps >= 2) AS conversions',
+        `round(100.0 * countIf(steps >= 2) / uniqExact(${group}), 2) AS conversion_rate_percentage`,
       ])
       .from(
         clix.exp(`
-        (SELECT 
-          a.${group},
-          a.a_time,
-          a.event_day,
-          ${breakdownGroupBy.length ? `${breakdownGroupBy.join(', ')},` : ''}
-          nullIf(min(b.b_time), '1970-01-01 00:00:00.000') AS conversion_time
-        FROM event_a AS a
-        LEFT JOIN event_b AS b ON a.${group} = b.${group}
-          AND b.b_time BETWEEN a.a_time AND a.a_time + INTERVAL ${funnelWindow} HOUR
-        GROUP BY a.${group}, a.a_time, a.event_day${breakdownGroupBy.length ? `, ${breakdownGroupBy.join(', ')}` : ''})
+        (SELECT
+          ${group},
+          any(${clix.toStartOf('created_at', interval)}) as event_day,
+          ${breakdownSelects.length ? `${breakdownSelects.join(', ')},` : ''}
+          windowFunnel(${funnelWindowSeconds})(
+            toDateTime(created_at),
+            ${conditionA},
+            ${conditionB}
+          ) as steps
+        FROM ${TABLE_NAMES.events}
+        ${profileJoin}
+        ${groupJoin}
+        ${cohortJoinsSql}
+        WHERE project_id = '${projectId}'
+          AND events.name IN ('${eventA.name}', '${eventB.name}')
+          AND created_at BETWEEN toDateTime('${startDate}') AND toDateTime('${endDate}')
+        GROUP BY ${group}${breakdownExpressions.length ? `, ${breakdownExpressions.join(', ')}` : ''})
       `),
       )
+      .where('steps', '>', 0)
       .groupBy(['event_day', ...breakdownGroupBy]);
 
     for (const order of ['event_day', ...breakdownGroupBy]) {
@@ -108,18 +181,20 @@ export class ConversionService {
     }
 
     const results = await query.execute();
-    return this.toSeries(results, breakdowns).map((serie, serieIndex) => {
-      return {
-        ...serie,
-        data: serie.data.map((d, index) => ({
-          ...d,
-          timestamp: new Date(d.date).getTime(),
-          serieIndex,
-          index,
-          serie: omit(['data'], serie),
-        })),
-      };
-    });
+    return this.toSeries(results, breakdowns, limit).map(
+      (serie, serieIndex) => {
+        return {
+          ...serie,
+          data: serie.data.map((d, index) => ({
+            ...d,
+            timestamp: new Date(d.date).getTime(),
+            serieIndex,
+            index,
+            serie: omit(['data'], serie),
+          })),
+        };
+      },
+    );
   }
 
   private toSeries(
@@ -131,6 +206,7 @@ export class ConversionService {
       [key: string]: string | number;
     }[],
     breakdowns: { name: string }[] = [],
+    limit: number | undefined = undefined,
   ) {
     if (!breakdowns.length) {
       return [
@@ -150,6 +226,10 @@ export class ConversionService {
     // Group by breakdown values
     const series = data.reduce(
       (acc, d) => {
+        if (limit && Object.keys(acc).length >= limit) {
+          return acc;
+        }
+
         const key =
           breakdowns.map((b, index) => d[`b_${index}`]).join('|') ||
           NOT_SET_VALUE;

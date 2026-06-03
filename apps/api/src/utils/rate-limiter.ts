@@ -22,7 +22,8 @@ export async function activateRateLimiter<T extends FastifyRequest>({
         message: 'You have exceeded the rate limit for this endpoint.',
       };
     },
-    redis: getRedisCache(),
+    // In test mode use in-memory storage so tests don't need a running Redis
+    redis: process.env.NODE_ENV !== 'test' ? getRedisCache() : undefined,
     keyGenerator(req) {
       if (keyGenerator) {
         const key = keyGenerator(req as T);
@@ -36,9 +37,10 @@ export async function activateRateLimiter<T extends FastifyRequest>({
         req.headers['x-forwarded-for']) as string;
     },
     onExceeded: (req, reply) => {
-      req.log.warn('Rate limit exceeded', {
-        clientId: req.headers['openpanel-client-id'],
-      });
+      req.log.warn(
+        { clientId: req.headers['openpanel-client-id'] },
+        'Rate limit exceeded',
+      );
     },
   });
 }

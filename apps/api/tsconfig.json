@@ -5,8 +5,9 @@
     "paths": {
       "@/*": ["./src/*"]
     },
-    "tsBuildInfoFile": "node_modules/.cache/tsbuildinfo.json"
+    "tsBuildInfoFile": "node_modules/.cache/tsbuildinfo.json",
+    "strictNullChecks": true
   },
-  "include": ["."],
+  "include": [".", "../../test"],
   "exclude": ["node_modules", "dist"]
 }

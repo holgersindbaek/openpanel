@@ -1,20 +1,31 @@
 import {
   Arctic,
+  buildOtpauthUrl,
   COOKIE_OPTIONS,
+  consumeRecoveryCode,
   createSession,
   deleteSessionTokenCookie,
+  generateQrDataUrl,
+  generateRecoveryCodes,
   generateSessionToken,
+  generateTotpSecret,
   github,
   google,
   hashPassword,
+  hashRecoveryCodes,
   invalidateSession,
+  setLastAuthProviderCookie,
   setSessionTokenCookie,
+  validateSessionToken,
   verifyPasswordHash,
+  verifyTotpCode,
 } from '@openpanel/auth';
-import { generateSecureId } from '@openpanel/common/server/id';
+import { generateSecureId } from '@openpanel/common/server';
 import {
   connectUserToOrganization,
   db,
+  decrypt,
+  encrypt,
   getShareOverviewById,
   getUserAccount,
 } from '@openpanel/db';
@@ -25,15 +36,20 @@ import {
   zSignInEmail,
   zSignInShare,
   zSignUpEmail,
+  zTotpCode,
+  zTotpOrRecoveryCode,
 } from '@openpanel/validation';
-import * as bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { TRPCAccessError, TRPCNotFoundError } from '../errors';
 import {
   createTRPCRouter,
+  protectedProcedure,
   publicProcedure,
   rateLimitMiddleware,
 } from '../trpc';
+
+const TWO_FACTOR_COOKIE = '2fa_challenge';
+const TWO_FACTOR_CHALLENGE_TTL_SECONDS = 5 * 60;
 
 const zProvider = z.enum(['email', 'google', 'github']);
 
@@ -80,7 +96,7 @@ export const authRouter = createTRPCRouter({
     .input(z.object({ provider: zProvider, inviteId: z.string().nullish() }))
     .mutation(async ({ input, ctx }) => {
       const isRegistrationAllowed = await getIsRegistrationAllowed(
-        input.inviteId,
+        input.inviteId
       );
 
       if (!isRegistrationAllowed) {
@@ -136,7 +152,7 @@ export const authRouter = createTRPCRouter({
     .input(zSignUpEmail)
     .mutation(async ({ input, ctx }) => {
       const isRegistrationAllowed = await getIsRegistrationAllowed(
-        input.inviteId,
+        input.inviteId
       );
 
       if (!isRegistrationAllowed) {
@@ -186,7 +202,7 @@ export const authRouter = createTRPCRouter({
       rateLimitMiddleware({
         max: 3,
         windowMs: 30_000,
-      }),
+      })
     )
     .input(zSignInEmail)
     .mutation(async ({ input, ctx }) => {
@@ -209,31 +225,263 @@ export const authRouter = createTRPCRouter({
         if (user.account.password?.startsWith('$argon2')) {
           const validPassword = await verifyPasswordHash(
             user.account.password ?? '',
-            password,
+            password
           );
 
           if (!validPassword) {
             throw TRPCAccessError('Incorrect email or password');
           }
         } else {
-          const validPassword = await bcrypt.compare(
-            password,
-            user.account.password ?? '',
+          throw TRPCAccessError(
+            'Reset your password, old password has expired'
           );
-
-          if (!validPassword) {
-            throw TRPCAccessError('Incorrect email or password');
-          }
         }
+      }
+
+      const totp = await db.userTotp.findUnique({
+        where: { userId: user.id },
+      });
+      if (totp?.enabledAt) {
+        const challengeId = generateSecureId('2fa');
+        await db.twoFactorChallenge.create({
+          data: {
+            id: challengeId,
+            userId: user.id,
+            expiresAt: new Date(
+              Date.now() + TWO_FACTOR_CHALLENGE_TTL_SECONDS * 1000
+            ),
+          },
+        });
+        ctx.setCookie(TWO_FACTOR_COOKIE, challengeId, {
+          maxAge: TWO_FACTOR_CHALLENGE_TTL_SECONDS,
+        });
+        return { type: 'totp_required' as const };
       }
 
       const token = generateSessionToken();
       const session = await createSession(token, user.id);
-
       setSessionTokenCookie(ctx.setCookie, token, session.expiresAt);
+      setLastAuthProviderCookie(ctx.setCookie, 'email');
       return {
-        type: 'email',
+        type: 'email' as const,
       };
+    }),
+
+  signInTotp: publicProcedure
+    .use(
+      rateLimitMiddleware({
+        max: 5,
+        windowMs: 60_000,
+      })
+    )
+    .input(z.object({ code: zTotpOrRecoveryCode }))
+    .mutation(async ({ input, ctx }) => {
+      const challengeId = ctx.cookies[TWO_FACTOR_COOKIE];
+      if (!challengeId) {
+        throw TRPCAccessError('No active two-factor challenge');
+      }
+
+      const challenge = await db.twoFactorChallenge.findUnique({
+        where: { id: challengeId },
+      });
+
+      if (!challenge || challenge.expiresAt < new Date()) {
+        if (challenge) {
+          await db.twoFactorChallenge.delete({ where: { id: challenge.id } });
+        }
+        ctx.setCookie(TWO_FACTOR_COOKIE, '', { maxAge: 0 });
+        throw TRPCAccessError('Two-factor challenge has expired');
+      }
+
+      const totp = await db.userTotp.findUnique({
+        where: { userId: challenge.userId },
+      });
+      if (!totp?.enabledAt) {
+        await db.twoFactorChallenge.delete({ where: { id: challenge.id } });
+        ctx.setCookie(TWO_FACTOR_COOKIE, '', { maxAge: 0 });
+        throw TRPCAccessError('Two-factor is not enabled');
+      }
+
+      const secret = decrypt(totp.secret);
+      const isTotpCode = /^\d{6}$/.test(input.code.replace(/\s+/g, ''));
+      let valid = false;
+
+      if (isTotpCode) {
+        valid = verifyTotpCode(secret, input.code);
+      } else {
+        const result = await consumeRecoveryCode({
+          hashes: totp.recoveryCodes,
+          input: input.code,
+        });
+        if (result.valid) {
+          valid = true;
+          await db.userTotp.update({
+            where: { userId: challenge.userId },
+            data: { recoveryCodes: result.remaining },
+          });
+        }
+      }
+
+      if (!valid) {
+        throw TRPCAccessError('Invalid code');
+      }
+
+      await db.twoFactorChallenge.delete({ where: { id: challenge.id } });
+      ctx.setCookie(TWO_FACTOR_COOKIE, '', { maxAge: 0 });
+
+      const token = generateSessionToken();
+      const session = await createSession(token, challenge.userId);
+      setSessionTokenCookie(ctx.setCookie, token, session.expiresAt);
+      setLastAuthProviderCookie(ctx.setCookie, 'email');
+      return { type: 'email' as const };
+    }),
+
+  totpStatus: protectedProcedure.query(async ({ ctx }) => {
+    const userId = ctx.session.userId!;
+    const [totp, emailAccount] = await Promise.all([
+      db.userTotp.findUnique({ where: { userId } }),
+      db.account.findFirst({
+        where: { userId, provider: 'email' },
+        select: { id: true },
+      }),
+    ]);
+    return {
+      enabled: Boolean(totp?.enabledAt),
+      enabledAt: totp?.enabledAt ?? null,
+      remainingRecoveryCodes: totp?.recoveryCodes.length ?? 0,
+      hasEmailProvider: Boolean(emailAccount),
+    };
+  }),
+
+  totpSetup: protectedProcedure.mutation(async ({ ctx }) => {
+    const userId = ctx.session.userId!;
+    const emailAccount = await db.account.findFirst({
+      where: { userId, provider: 'email' },
+      select: { id: true },
+    });
+    if (!emailAccount) {
+      throw TRPCAccessError(
+        'Two-factor authentication is only available for email/password sign-ins. Your account uses a social provider, which handles 2FA on its end.'
+      );
+    }
+    const existing = await db.userTotp.findUnique({ where: { userId } });
+    if (existing?.enabledAt) {
+      throw TRPCAccessError(
+        'Two-factor is already enabled. Disable it first to re-configure.'
+      );
+    }
+
+    const user = await db.user.findUniqueOrThrow({
+      where: { id: userId },
+      select: { email: true },
+    });
+
+    const secret = generateTotpSecret();
+    const otpauthUrl = buildOtpauthUrl({
+      secret,
+      accountName: user.email,
+    });
+    const qrDataUrl = await generateQrDataUrl(otpauthUrl);
+
+    await db.userTotp.upsert({
+      where: { userId },
+      create: {
+        userId,
+        secret: encrypt(secret),
+        recoveryCodes: [],
+      },
+      update: {
+        secret: encrypt(secret),
+        recoveryCodes: [],
+        enabledAt: null,
+      },
+    });
+
+    return { otpauthUrl, qrDataUrl, secret };
+  }),
+
+  totpEnable: protectedProcedure
+    .use(rateLimitMiddleware({ max: 5, windowMs: 60_000 }))
+    .input(z.object({ code: zTotpCode }))
+    .mutation(async ({ ctx, input }) => {
+      const userId = ctx.session.userId!;
+      const totp = await db.userTotp.findUnique({ where: { userId } });
+      if (!totp) {
+        throw TRPCNotFoundError('Start two-factor setup first');
+      }
+      if (totp.enabledAt) {
+        throw TRPCAccessError('Two-factor is already enabled');
+      }
+
+      const secret = decrypt(totp.secret);
+      if (!verifyTotpCode(secret, input.code)) {
+        throw TRPCAccessError('Invalid code');
+      }
+
+      const recoveryCodes = generateRecoveryCodes();
+      const hashed = await hashRecoveryCodes(recoveryCodes);
+
+      await db.userTotp.update({
+        where: { userId },
+        data: {
+          enabledAt: new Date(),
+          recoveryCodes: hashed,
+        },
+      });
+
+      return { recoveryCodes };
+    }),
+
+  totpDisable: protectedProcedure
+    .use(rateLimitMiddleware({ max: 5, windowMs: 60_000 }))
+    .input(z.object({ code: zTotpOrRecoveryCode }))
+    .mutation(async ({ ctx, input }) => {
+      const userId = ctx.session.userId!;
+      const totp = await db.userTotp.findUnique({ where: { userId } });
+      if (!totp?.enabledAt) {
+        throw TRPCAccessError('Two-factor is not enabled');
+      }
+
+      const secret = decrypt(totp.secret);
+      const isTotpCode = /^\d{6}$/.test(input.code.replace(/\s+/g, ''));
+      const valid = isTotpCode
+        ? verifyTotpCode(secret, input.code)
+        : (
+            await consumeRecoveryCode({
+              hashes: totp.recoveryCodes,
+              input: input.code,
+            })
+          ).valid;
+
+      if (!valid) {
+        throw TRPCAccessError('Invalid code');
+      }
+
+      await db.userTotp.delete({ where: { userId } });
+      await db.twoFactorChallenge.deleteMany({ where: { userId } });
+      return { disabled: true };
+    }),
+
+  totpRegenerateRecoveryCodes: protectedProcedure
+    .use(rateLimitMiddleware({ max: 3, windowMs: 60_000 }))
+    .input(z.object({ code: zTotpCode }))
+    .mutation(async ({ ctx, input }) => {
+      const userId = ctx.session.userId!;
+      const totp = await db.userTotp.findUnique({ where: { userId } });
+      if (!totp?.enabledAt) {
+        throw TRPCAccessError('Two-factor is not enabled');
+      }
+      const secret = decrypt(totp.secret);
+      if (!verifyTotpCode(secret, input.code)) {
+        throw TRPCAccessError('Invalid code');
+      }
+      const recoveryCodes = generateRecoveryCodes();
+      const hashed = await hashRecoveryCodes(recoveryCodes);
+      await db.userTotp.update({
+        where: { userId },
+        data: { recoveryCodes: hashed },
+      });
+      return { recoveryCodes };
     }),
 
   resetPassword: publicProcedure
@@ -242,7 +490,7 @@ export const authRouter = createTRPCRouter({
       rateLimitMiddleware({
         max: 3,
         windowMs: 60_000,
-      }),
+      })
     )
     .mutation(async ({ input, ctx }) => {
       const { token, password } = input;
@@ -280,7 +528,7 @@ export const authRouter = createTRPCRouter({
       rateLimitMiddleware({
         max: 3,
         windowMs: 60_000,
-      }),
+      })
     )
     .input(zRequestResetPassword)
     .mutation(async ({ input, ctx }) => {
@@ -318,7 +566,7 @@ export const authRouter = createTRPCRouter({
       await sendEmail('reset-password', {
         to: input.email,
         data: {
-          url: `${process.env.NEXT_PUBLIC_DASHBOARD_URL}/reset-password?token=${token}`,
+          url: `${process.env.DASHBOARD_URL || process.env.NEXT_PUBLIC_DASHBOARD_URL}/reset-password?token=${token}`,
         },
       });
 
@@ -328,17 +576,51 @@ export const authRouter = createTRPCRouter({
     return ctx.session;
   }),
 
+  extendSession: publicProcedure.mutation(async ({ ctx }) => {
+    if (!(ctx.session.session && ctx.cookies.session)) {
+      return { extended: false };
+    }
+
+    const token = ctx.cookies.session;
+    const session = await validateSessionToken(token);
+
+    if (session.session) {
+      // Re-set the cookie with updated expiration
+      setSessionTokenCookie(ctx.setCookie, token, session.session.expiresAt);
+      return {
+        extended: true,
+        expiresAt: session.session.expiresAt,
+      };
+    }
+
+    return { extended: false };
+  }),
+
   signInShare: publicProcedure
     .use(
       rateLimitMiddleware({
         max: 3,
         windowMs: 30_000,
-      }),
+      })
     )
     .input(zSignInShare)
     .mutation(async ({ input, ctx }) => {
-      const { password, shareId } = input;
-      const share = await getShareOverviewById(input.shareId);
+      const { password, shareId, shareType = 'overview' } = input;
+      let share: { password: string | null; public: boolean } | null = null;
+      let cookieName = '';
+
+      if (shareType === 'overview') {
+        share = await getShareOverviewById(shareId);
+        cookieName = `shared-overview-${shareId}`;
+      } else if (shareType === 'dashboard') {
+        const { getShareDashboardById } = await import('@openpanel/db');
+        share = await getShareDashboardById(shareId);
+        cookieName = `shared-dashboard-${shareId}`;
+      } else if (shareType === 'report') {
+        const { getShareReportById } = await import('@openpanel/db');
+        share = await getShareReportById(shareId);
+        cookieName = `shared-report-${shareId}`;
+      }
 
       if (!share) {
         throw TRPCNotFoundError('Share not found');
@@ -358,7 +640,7 @@ export const authRouter = createTRPCRouter({
         throw TRPCAccessError('Incorrect password');
       }
 
-      ctx.setCookie(`shared-overview-${shareId}`, '1', {
+      ctx.setCookie(cookieName, '1', {
         maxAge: 60 * 60 * 24 * 7,
         ...COOKIE_OPTIONS,
       });

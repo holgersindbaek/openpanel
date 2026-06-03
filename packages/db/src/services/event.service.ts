@@ -1,26 +1,30 @@
-import { path, assocPath, last, mergeDeepRight } from 'ramda';
-import { escape } from 'sqlstring';
-import { v4 as uuid } from 'uuid';
-
 import { DateTime, toDots } from '@openpanel/common';
 import { cacheable } from '@openpanel/redis';
 import type { IChartEventFilter } from '@openpanel/validation';
-
+import { assocPath, last, mergeDeepRight, path, uniq } from 'ramda';
+import sqlstring from 'sqlstring';
+import { v4 as uuid } from 'uuid';
 import { botBuffer, eventBuffer, sessionBuffer } from '../buffers';
 import {
-  TABLE_NAMES,
   ch,
   chQuery,
   convertClickhouseDateToJs,
   formatClickhouseDate,
+  TABLE_NAMES,
 } from '../clickhouse/client';
-import { type Query, clix } from '../clickhouse/query-builder';
+import { clix, type Query } from '../clickhouse/query-builder';
 import type { EventMeta, Prisma } from '../prisma-client';
 import { db } from '../prisma-client';
-import { createSqlBuilder } from '../sql-builder';
+import { createSqlBuilder, type SqlBuilderObject } from '../sql-builder';
 import { getEventFiltersWhereClause } from './chart.service';
+import { buildFilterWhere } from './filter-where.service';
 import type { IServiceProfile, IServiceUpsertProfile } from './profile.service';
-import { getProfileById, getProfiles, upsertProfile } from './profile.service';
+import {
+  getProfileById,
+  getProfilesCached,
+  upsertProfile,
+} from './profile.service';
+import type { IClickhouseSession } from './session.service';
 
 export type IImportedEvent = Omit<
   IClickhouseEvent,
@@ -29,14 +33,14 @@ export type IImportedEvent = Omit<
   properties: Record<string, unknown>;
 };
 
-export type IServicePage = {
+export interface IServicePage {
   path: string;
   count: number;
   project_id: string;
   first_seen: string;
   title: string;
   origin: string;
-};
+}
 
 export interface IClickhouseBotEvent {
   id: string;
@@ -88,10 +92,61 @@ export interface IClickhouseEvent {
   imported_at: string | null;
   sdk_name: string;
   sdk_version: string;
+  revenue?: number;
+  groups: string[];
 
   // They do not exist here. Just make ts happy for now
   profile?: IServiceProfile;
   meta?: EventMeta;
+}
+
+export function transformSessionToEvent(
+  session: IClickhouseSession
+): IServiceEvent {
+  return {
+    id: '', // Not used
+    name: 'screen_view',
+    sessionId: session.id,
+    profileId: session.profile_id,
+    path: session.exit_path,
+    origin: session.exit_origin,
+    createdAt: convertClickhouseDateToJs(session.ended_at),
+    referrer: session.referrer,
+    referrerName: session.referrer_name,
+    referrerType: session.referrer_type,
+    os: session.os,
+    osVersion: session.os_version,
+    browser: session.browser,
+    browserVersion: session.browser_version,
+    device: session.device,
+    brand: session.brand,
+    model: session.model,
+    country: session.country,
+    region: session.region,
+    city: session.city,
+    longitude: session.longitude,
+    latitude: session.latitude,
+    projectId: session.project_id,
+    deviceId: session.device_id,
+    duration: 0,
+    revenue: session.revenue,
+    properties: {
+      is_bounce: session.is_bounce,
+      __query: {
+        utm_medium: session.utm_medium,
+        utm_source: session.utm_source,
+        utm_campaign: session.utm_campaign,
+        utm_content: session.utm_content,
+        utm_term: session.utm_term,
+      },
+    },
+    profile: undefined,
+    meta: undefined,
+    importedAt: undefined,
+    sdkName: undefined,
+    sdkVersion: undefined,
+    groups: [],
+  };
 }
 
 export function transformEvent(event: IClickhouseEvent): IServiceEvent {
@@ -116,7 +171,6 @@ export function transformEvent(event: IClickhouseEvent): IServiceEvent {
     device: event.device,
     brand: event.brand,
     model: event.model,
-    duration: event.duration,
     path: event.path,
     origin: event.origin,
     referrer: event.referrer,
@@ -127,12 +181,18 @@ export function transformEvent(event: IClickhouseEvent): IServiceEvent {
     sdkName: event.sdk_name,
     sdkVersion: event.sdk_version,
     profile: event.profile,
+    revenue: event.revenue,
+    groups: event.groups ?? [],
   };
 }
 
 export type IServiceCreateEventPayload = Omit<
   IServiceEvent,
   'id' | 'importedAt' | 'profile' | 'meta'
+>;
+export type IServiceImportedEventPayload = Omit<
+  IServiceEvent,
+  'profile' | 'meta'
 >;
 
 export interface IServiceEvent {
@@ -145,8 +205,6 @@ export interface IServiceEvent {
   properties: Record<string, unknown> & {
     hash?: string;
     query?: Record<string, unknown>;
-    __reqId?: string;
-    __user_agent?: string;
   };
   createdAt: Date;
   country?: string | undefined;
@@ -161,7 +219,7 @@ export interface IServiceEvent {
   device?: string | undefined;
   brand?: string | undefined;
   model?: string | undefined;
-  duration: number;
+  duration?: number;
   path: string;
   origin: string;
   referrer: string | undefined;
@@ -172,6 +230,8 @@ export interface IServiceEvent {
   meta: EventMeta | undefined;
   sdkName: string | undefined;
   sdkVersion: string | undefined;
+  revenue?: number;
+  groups: string[];
 }
 
 type SelectHelper<T> = {
@@ -191,7 +251,7 @@ export interface IServiceEventMinimal {
   browser?: string | undefined;
   device?: string | undefined;
   brand?: string | undefined;
-  duration: number;
+  duration?: number;
   path: string;
   origin: string;
   referrer: string | undefined;
@@ -214,7 +274,7 @@ function maskString(str: string, mask = '*') {
 }
 
 export function transformMinimalEvent(
-  event: IServiceEvent,
+  event: IServiceEvent
 ): IServiceEventMinimal {
   return {
     id: event.id,
@@ -250,7 +310,7 @@ export const getEventMetasCached = cacheable(getEventMetas, 60 * 5);
 
 export async function getEvents(
   sql: string,
-  options: GetEventsOptions = {},
+  options: GetEventsOptions = {}
 ): Promise<IServiceEvent[]> {
   const events = await chQuery<IClickhouseEvent>(sql);
   const projectId = events[0]?.project_id;
@@ -258,7 +318,7 @@ export async function getEvents(
     const ids = events
       .filter((e) => e.device_id !== e.profile_id)
       .map((e) => e.profile_id);
-    const profiles = await getProfiles(ids, projectId);
+    const profiles = await getProfilesCached(ids, projectId);
 
     const map = new Map<string, IServiceProfile>();
     for (const profile of profiles) {
@@ -266,7 +326,19 @@ export async function getEvents(
     }
 
     for (const event of events) {
-      event.profile = map.get(event.profile_id);
+      event.profile = map.get(event.profile_id) ?? {
+        id: event.profile_id,
+        email: '',
+        avatar: '',
+        firstName: '',
+        lastName: '',
+        createdAt: new Date(),
+        lastSeenAt: new Date(),
+        projectId,
+        isExternal: false,
+        properties: {},
+        groups: [],
+      };
     }
   }
 
@@ -313,16 +385,18 @@ export async function createEvent(payload: IServiceCreateEventPayload) {
     device: payload.device ?? '',
     brand: payload.brand ?? '',
     model: payload.model ?? '',
-    duration: payload.duration,
+    duration: payload.duration ?? 0,
     referrer: payload.referrer ?? '',
     referrer_name: payload.referrerName ?? '',
     referrer_type: payload.referrerType ?? '',
     imported_at: null,
     sdk_name: payload.sdkName ?? '',
     sdk_version: payload.sdkVersion ?? '',
+    revenue: payload.revenue,
+    groups: payload.groups ?? [],
   };
 
-  await Promise.all([sessionBuffer.add(event), eventBuffer.add(event)]);
+  const promises = [sessionBuffer.add(event), eventBuffer.add(event)];
 
   if (payload.profileId) {
     const profile: IServiceUpsertProfile = {
@@ -349,13 +423,28 @@ export async function createEvent(payload: IServiceCreateEventPayload) {
       },
     };
 
-    if (
-      profile.isExternal ||
-      (profile.isExternal === false && payload.name === 'session_start')
-    ) {
-      await upsertProfile(profile, true);
+    // Only upsert the profile on session boundaries.
+    // - session_start covers fresh activity.
+    // - session_end is synthesized server-side by the worker.
+    // Identified users' explicit profile writes (op.identify(), op.setProfile())
+    // go through the controller path and are not affected by this branch.
+    //
+    // `isFromEvent=true` activates profile-buffer's cache shortcut: if the
+    // profile is in the 1h Redis cache (i.e. recently flushed), the add is
+    // skipped. Trade-off: profile.last_seen_at granularity is capped at the
+    // cache TTL (~1h) rather than per-session. We accept this because
+    // (a) profile-buffer was the leading indicator in the 2026-05-20 buildup
+    //     and was processing ~2 writes per session per anonymous user;
+    // (b) the bulk of those writes carried no new information (anonymous
+    //     profile data is event-derived and stable across a session);
+    // (c) recency queries should derive from event timestamps, not from
+    //     profile.last_seen_at.
+    if (payload.name === 'session_start' || payload.name === 'session_end') {
+      promises.push(upsertProfile(profile, true));
     }
   }
+
+  await Promise.all(promises);
 
   return {
     document: event,
@@ -365,6 +454,9 @@ export async function createEvent(payload: IServiceCreateEventPayload) {
 export interface GetEventListOptions {
   projectId: string;
   profileId?: string;
+  sessionId?: string;
+  groupId?: string;
+  cohortId?: string;
   take: number;
   cursor?: number | Date;
   events?: string[] | null;
@@ -372,29 +464,49 @@ export interface GetEventListOptions {
   startDate?: Date;
   endDate?: Date;
   select?: SelectHelper<IServiceEvent>;
+  custom?: (sb: SqlBuilderObject) => void;
+  dateIntervalInDays?: number;
 }
 
-export async function getEventList({
-  cursor,
-  take,
-  projectId,
-  profileId,
-  events,
-  filters,
-  startDate,
-  endDate,
-  select: incomingSelect,
-}: GetEventListOptions) {
+export async function getEventList(options: GetEventListOptions) {
+  const {
+    cursor,
+    take,
+    projectId,
+    profileId,
+    sessionId,
+    groupId,
+    cohortId,
+    events,
+    filters,
+    startDate,
+    endDate,
+    custom,
+    select: incomingSelect,
+    dateIntervalInDays = 0.5,
+  } = options;
   const { sb, getSql, join } = createSqlBuilder();
+
+  const MAX_DATE_INTERVAL_IN_DAYS = 365;
+  // Cap the date interval to prevent infinity
+  const safeDateIntervalInDays = Math.min(
+    dateIntervalInDays,
+    MAX_DATE_INTERVAL_IN_DAYS
+  );
 
   if (typeof cursor === 'number') {
     sb.offset = Math.max(0, (cursor ?? 0) * take);
   } else if (cursor instanceof Date) {
-    sb.where.cursor = `created_at <= '${formatClickhouseDate(cursor)}'`;
+    sb.where.cursorWindow = `created_at >= toDateTime64(${sqlstring.escape(formatClickhouseDate(cursor))}, 3) - INTERVAL ${safeDateIntervalInDays} DAY`;
+    sb.where.cursor = `created_at < ${sqlstring.escape(formatClickhouseDate(cursor))}`;
+  }
+
+  if (!(cursor || (startDate && endDate))) {
+    sb.where.cursorWindow = `created_at >= toDateTime64(${sqlstring.escape(formatClickhouseDate(new Date()))}, 3) - INTERVAL ${safeDateIntervalInDays} DAY`;
   }
 
   sb.limit = take;
-  sb.where.projectId = `project_id = ${escape(projectId)}`;
+  sb.where.projectId = `project_id = ${sqlstring.escape(projectId)}`;
   const select = mergeDeepRight(
     {
       id: true,
@@ -411,8 +523,11 @@ export async function getEventList({
       os: true,
       browser: true,
     },
-    incomingSelect ?? {},
+    incomingSelect ?? {}
   );
+
+  sb.select.createdAt = 'created_at';
+  sb.select.projectId = 'project_id';
 
   if (select.id) {
     sb.select.id = 'id';
@@ -434,9 +549,6 @@ export async function getEventList({
   }
   if (select.properties) {
     sb.select.properties = 'properties';
-  }
-  if (select.createdAt) {
-    sb.select.createdAt = 'created_at';
   }
   if (select.country) {
     sb.select.country = 'country';
@@ -474,9 +586,6 @@ export async function getEventList({
   if (select.model) {
     sb.select.model = 'model';
   }
-  if (select.duration) {
-    sb.select.duration = 'duration';
-  }
   if (select.path) {
     sb.select.path = 'path';
   }
@@ -501,9 +610,33 @@ export async function getEventList({
   if (select.sdkVersion) {
     sb.select.sdkVersion = 'sdk_version';
   }
+  if (select.revenue) {
+    sb.select.revenue = 'revenue';
+  }
+
+  if (select.groups) {
+    sb.select.groups = 'groups';
+  }
 
   if (profileId) {
-    sb.where.deviceId = `(device_id IN (SELECT device_id as did FROM ${TABLE_NAMES.events} WHERE project_id = ${escape(projectId)} AND device_id != '' AND profile_id = ${escape(profileId)} group by did) OR profile_id = ${escape(profileId)})`;
+    // Identity stitching: pull pre-identification anonymous events from devices
+    // this profile has used, plus the profile's own identified events.
+    // Anonymous events have profile_id = device_id (see event.service.ts:357);
+    // the guard prevents leaking another user's identified events when a
+    // device_id collides (NAT, shared UA, server-side senders).
+    sb.where.deviceId = `((device_id IN (SELECT device_id as did FROM ${TABLE_NAMES.events} WHERE project_id = ${sqlstring.escape(projectId)} AND device_id != '' AND profile_id = ${sqlstring.escape(profileId)} group by did) AND profile_id = device_id) OR profile_id = ${sqlstring.escape(profileId)})`;
+  }
+
+  if (sessionId) {
+    sb.where.sessionId = `session_id = ${sqlstring.escape(sessionId)}`;
+  }
+
+  if (groupId) {
+    sb.where.groupId = `has(groups, ${sqlstring.escape(groupId)})`;
+  }
+
+  if (cohortId) {
+    sb.where.cohortId = `profile_id IN (SELECT profile_id FROM ${TABLE_NAMES.cohort_members} FINAL WHERE cohort_id = ${sqlstring.escape(cohortId)} AND project_id = ${sqlstring.escape(projectId)})`;
   }
 
   if (startDate && endDate) {
@@ -512,40 +645,82 @@ export async function getEventList({
 
   if (events && events.length > 0) {
     sb.where.events = `name IN (${join(
-      events.map((event) => escape(event)),
-      ',',
+      events.map((event) => sqlstring.escape(event)),
+      ','
     )})`;
   }
 
   if (filters) {
     sb.where = {
       ...sb.where,
-      ...getEventFiltersWhereClause(filters),
+      ...getEventFiltersWhereClause(filters, projectId, 'e'),
     };
+
+    // Join profiles table if any filter uses profile fields
+    const profileFilters = filters
+      .filter((f) => f.name.startsWith('profile.'))
+      .map((f) => f.name.replace('profile.', ''));
+
+    if (profileFilters.length > 0) {
+      sb.joins.profiles = `LEFT ANY JOIN (SELECT id, ${uniq(profileFilters.map((f) => f.split('.')[0])).join(', ')} FROM ${TABLE_NAMES.profiles} FINAL WHERE project_id = ${sqlstring.escape(projectId)}) as profile on profile.id = profile_id`;
+    }
+
+    // Join groups table if any filter uses group fields
+    const groupFilters = filters.filter((f) => f.name.startsWith('group.'));
+    if (groupFilters.length > 0) {
+      sb.joins.groups = 'ARRAY JOIN groups AS _group_id';
+      sb.joins.groups_cte = `LEFT ANY JOIN (SELECT id, name, type, properties FROM ${TABLE_NAMES.groups} FINAL WHERE project_id = ${sqlstring.escape(projectId)}) AS _g ON _g.id = _group_id`;
+    }
   }
 
-  sb.orderBy.created_at =
-    'toDate(created_at) DESC, created_at DESC, profile_id DESC, name DESC';
+  sb.orderBy.created_at = 'created_at DESC, id ASC';
 
-  return getEvents(getSql(), {
+  if (custom) {
+    custom(sb);
+  }
+
+  const data = await getEvents(getSql(), {
     profile: select.profile ?? true,
     meta: select.meta ?? true,
   });
+
+  // If we dont get any events, try without the cursor window
+  if (
+    data.length === 0 &&
+    sb.where.cursorWindow &&
+    safeDateIntervalInDays < MAX_DATE_INTERVAL_IN_DAYS
+  ) {
+    return getEventList({
+      ...options,
+      dateIntervalInDays: dateIntervalInDays * 2,
+    });
+  }
+
+  return data;
 }
 
-export const getEventsCountCached = cacheable(getEventsCount, 60 * 10);
 export async function getEventsCount({
   projectId,
   profileId,
+  groupId,
+  cohortId,
   events,
   filters,
   startDate,
   endDate,
 }: Omit<GetEventListOptions, 'cursor' | 'take'>) {
   const { sb, getSql, join } = createSqlBuilder();
-  sb.where.projectId = `project_id = ${escape(projectId)}`;
+  sb.where.projectId = `project_id = ${sqlstring.escape(projectId)}`;
   if (profileId) {
-    sb.where.profileId = `profile_id = ${escape(profileId)}`;
+    sb.where.profileId = `profile_id = ${sqlstring.escape(profileId)}`;
+  }
+
+  if (groupId) {
+    sb.where.groupId = `has(groups, ${sqlstring.escape(groupId)})`;
+  }
+
+  if (cohortId) {
+    sb.where.cohortId = `profile_id IN (SELECT profile_id FROM ${TABLE_NAMES.cohort_members} FINAL WHERE cohort_id = ${sqlstring.escape(cohortId)} AND project_id = ${sqlstring.escape(projectId)})`;
   }
 
   if (startDate && endDate) {
@@ -554,20 +729,36 @@ export async function getEventsCount({
 
   if (events && events.length > 0) {
     sb.where.events = `name IN (${join(
-      events.map((event) => escape(event)),
-      ',',
+      events.map((event) => sqlstring.escape(event)),
+      ','
     )})`;
   }
 
   if (filters) {
     sb.where = {
       ...sb.where,
-      ...getEventFiltersWhereClause(filters),
+      ...getEventFiltersWhereClause(filters, projectId, 'e'),
     };
+
+    // Join profiles table if any filter uses profile fields
+    const profileFilters = filters
+      .filter((f) => f.name.startsWith('profile.'))
+      .map((f) => f.name.replace('profile.', ''));
+
+    if (profileFilters.length > 0) {
+      sb.joins.profiles = `LEFT ANY JOIN (SELECT id, ${uniq(profileFilters.map((f) => f.split('.')[0])).join(', ')} FROM ${TABLE_NAMES.profiles} FINAL WHERE project_id = ${sqlstring.escape(projectId)}) as profile on profile.id = profile_id`;
+    }
+
+    // Join groups table if any filter uses group fields
+    const groupFilters = filters.filter((f) => f.name.startsWith('group.'));
+    if (groupFilters.length > 0) {
+      sb.joins.groups = 'ARRAY JOIN groups AS _group_id';
+      sb.joins.groups_cte = `LEFT ANY JOIN (SELECT id, name, type, properties FROM ${TABLE_NAMES.groups} FINAL WHERE project_id = ${sqlstring.escape(projectId)}) AS _g ON _g.id = _group_id`;
+    }
   }
 
   const res = await chQuery<{ count: number }>(
-    getSql().replace('*', 'count(*) as count'),
+    getSql().replace('*', 'count(*) as count')
   );
 
   return res[0]?.count ?? 0;
@@ -612,14 +803,14 @@ export async function getTopPages({
 }) {
   const res = await chQuery<IServicePage>(`
     SELECT path, count(*) as count, project_id, first_value(created_at) as first_seen, last_value(properties['__title']) as title, origin
-    FROM ${TABLE_NAMES.events} 
-    WHERE name = 'screen_view' 
-    AND  project_id = ${escape(projectId)} 
-    AND created_at > now() - INTERVAL 30 DAY 
+    FROM ${TABLE_NAMES.events}
+    WHERE name = 'screen_view'
+    AND  project_id = ${sqlstring.escape(projectId)}
+    AND created_at > now() - INTERVAL 30 DAY
     ${search ? `AND path ILIKE '%${search}%'` : ''}
     GROUP BY path, project_id, origin
-    ORDER BY count desc 
-    LIMIT ${take} 
+    ORDER BY count desc
+    LIMIT ${take}
     OFFSET ${Math.max(0, (cursor ?? 0) * take)}
   `);
 
@@ -642,7 +833,7 @@ class EventService {
     where,
     select,
     limit,
-    orderBy,
+    filters,
   }: {
     projectId: string;
     profileId?: string;
@@ -657,7 +848,14 @@ class EventService {
     };
     limit?: number;
     orderBy?: keyof IClickhouseEvent;
+    filters?: IChartEventFilter[];
   }) {
+    // Extract profile filters if any
+    const profileFilters =
+      filters
+        ?.filter((f) => f.name.startsWith('profile.'))
+        .map((f) => f.name.replace('profile.', '')) ?? [];
+
     const events = clix(this.client)
       .select<
         Partial<IClickhouseEvent> & {
@@ -674,7 +872,6 @@ class EventService {
         select.event.deviceId && 'e.device_id as device_id',
         select.event.name && 'e.name as name',
         select.event.path && 'e.path as path',
-        select.event.duration && 'e.duration as duration',
         select.event.country && 'e.country as country',
         select.event.city && 'e.city as city',
         select.event.os && 'e.os as os',
@@ -686,6 +883,12 @@ class EventService {
       ])
       .from('events e')
       .where('project_id', '=', projectId)
+      .when(profileFilters.length > 0, (q) => {
+        q.leftJoin(
+          `(SELECT id, ${uniq(profileFilters.map((f) => f.split('.')[0])).join(', ')} FROM ${TABLE_NAMES.profiles} FINAL WHERE project_id = ${sqlstring.escape(projectId)}) as profile`,
+          'profile.id = e.profile_id'
+        );
+      })
       .when(!!where?.event, where?.event)
       // Do not limit if profileId, we will limit later since we need the "correct" profileId
       .when(!!limit && !profileId, (q) => q.limit(limit!))
@@ -724,12 +927,12 @@ class EventService {
                   .select(['profile_id'])
                   .from('cte_sessions')
                   .union(
-                    clix(this.client).select(['profile_id']).from('cte_events'),
-                  ),
-              ),
+                    clix(this.client).select(['profile_id']).from('cte_events')
+                  )
+              )
             )
-            .groupBy(['profile_id']),
-        ),
+            .groupBy(['profile_id'])
+        )
       )
       .groupBy(['id', 'project_id'])
       .when(!!where?.profile, where?.profile);
@@ -753,7 +956,6 @@ class EventService {
         select.event.deviceId && 'e.device_id as device_id',
         select.event.name && 'e.name as name',
         select.event.path && 'e.path as path',
-        select.event.duration && 'e.duration as duration',
         select.event.country && 'e.country as country',
         select.event.city && 'e.city as city',
         select.event.os && 'e.os as os',
@@ -776,7 +978,7 @@ class EventService {
       .leftJoin('cte_sessions s', 'e.session_id = s.session_id')
       .leftJoin(
         'cte_profiles p',
-        's.profile_id = p.id AND p.is_external = true',
+        's.profile_id = p.id AND p.is_external = true'
       )
       .when(!!profileId, (q) => {
         q.where('s.profile_id', '=', profileId);
@@ -789,10 +991,8 @@ class EventService {
       .map((item) => {
         return Object.entries(item).reduce(
           (acc, [prop, val]) => {
-            if (prop === 'event_profile_id' && val) {
-              if (!item.profile_id) {
-                return assocPath(['profile', 'id'], val, acc);
-              }
+            if (prop === 'event_profile_id' && val && !item.profile_id) {
+              return assocPath(['profile', 'id'], val, acc);
             }
 
             if (
@@ -802,14 +1002,14 @@ class EventService {
               return assocPath(
                 ['profile', prop.replace('profile_', '')],
                 val,
-                acc,
+                acc
               );
             }
             return assocPath([prop], val, acc);
           },
           {
             profile: {},
-          } as IClickhouseEvent,
+          } as IClickhouseEvent
         );
       })
       .map(transformEvent);
@@ -824,34 +1024,41 @@ class EventService {
     id: string;
     createdAt?: Date;
   }) {
-    const event = await clix(this.client)
-      .select<IClickhouseEvent>(['*'])
-      .from('events')
-      .where('project_id', '=', projectId)
-      .when(!!createdAt, (q) => {
-        if (createdAt) {
-          q.where('created_at', 'BETWEEN', [
-            new Date(createdAt.getTime() - 1000),
-            new Date(createdAt.getTime() + 1000),
-          ]);
-        }
-      })
-      .where('id', '=', id)
-      .limit(1)
-      .execute()
-      .then((res) => {
-        if (!res[0]) {
-          return null;
-        }
+    const [event, metas] = await Promise.all([
+      clix(this.client)
+        .select<IClickhouseEvent>(['*'])
+        .from('events')
+        .where('project_id', '=', projectId)
+        .when(!!createdAt, (q) => {
+          if (createdAt) {
+            q.where('created_at', 'BETWEEN', [
+              new Date(createdAt.getTime() - 1000),
+              new Date(createdAt.getTime() + 1000),
+            ]);
+          }
+        })
+        .where('id', '=', id)
+        .limit(1)
+        .execute()
+        .then((res) => {
+          if (!res[0]) {
+            return null;
+          }
 
-        return transformEvent(res[0]);
-      });
+          return transformEvent(res[0]);
+        }),
+      getEventMetasCached(projectId),
+    ]);
 
     if (event?.profileId) {
       const profile = await getProfileById(event?.profileId, projectId);
       if (profile) {
         event.profile = profile;
       }
+    }
+
+    if (event) {
+      event.meta = metas.find((meta) => meta.name === event.name);
     }
 
     return event;
@@ -876,6 +1083,7 @@ class EventService {
       profileId,
       limit,
       orderBy: 'created_at',
+      filters,
       select: {
         event: {
           deviceId: true,
@@ -883,7 +1091,6 @@ class EventService {
           id: true,
           name: true,
           createdAt: true,
-          duration: true,
           country: true,
           city: true,
           os: true,
@@ -911,8 +1118,19 @@ class EventService {
           }
           if (filters) {
             q.rawWhere(
-              Object.values(getEventFiltersWhereClause(filters)).join(' AND '),
+              Object.values(
+                getEventFiltersWhereClause(filters, projectId)
+              ).join(' AND ')
             );
+            const groupFilters = filters.filter((f) =>
+              f.name.startsWith('group.')
+            );
+            if (groupFilters.length > 0) {
+              q.rawJoin('ARRAY JOIN groups AS _group_id');
+              q.rawJoin(
+                `LEFT ANY JOIN (SELECT id, name, type, properties FROM ${TABLE_NAMES.groups} FINAL WHERE project_id = ${sqlstring.escape(projectId)}) AS _g ON _g.id = _group_id`
+              );
+            }
           }
         },
         session: (q) => {
@@ -941,7 +1159,7 @@ class EventService {
     return {
       items: this.transformFromQuery(items).map((item) => ({
         ...item,
-        projectId: projectId,
+        projectId,
       })),
       meta: {
         next: hasNext ? last(items)?.created_at : null,
@@ -951,3 +1169,233 @@ class EventService {
 }
 
 export const eventService = new EventService(ch);
+
+import { getCache } from '@openpanel/redis';
+import { resolveDateRange } from './date.service';
+
+export async function getTopEventNames(projectId: string): Promise<string[]> {
+  return getCache(`mcp:event-names:${projectId}`, 60 * 10, async () => {
+    const rows = await clix(ch)
+      .select<IClickhouseEvent>(['name', 'count() as count'])
+      .from(TABLE_NAMES.event_names_mv)
+      .where('project_id', '=', projectId)
+      .groupBy(['name'])
+      .orderBy('count', 'DESC')
+      .limit(50)
+      .execute();
+
+    return rows.map((r) => r.name);
+  });
+}
+
+export const listEventNamesCore = (projectId: string): Promise<string[]> =>
+  getTopEventNames(projectId);
+
+/**
+ * Top-level filterable columns on the `events` table. These apply to
+ * every event regardless of name and can be passed straight to
+ * `getEventFiltersWhereClause` as filter / breakdown `name` values.
+ *
+ * Kept as a whitelist because the filter builder splices `name` into
+ * SQL verbatim — only these are safe to expose through the AI /
+ * MCP discovery surface.
+ */
+export const EVENT_COLUMNS = [
+  'path',
+  'origin',
+  'referrer',
+  'referrer_name',
+  'referrer_type',
+  'duration',
+  'country',
+  'city',
+  'region',
+  'os',
+  'os_version',
+  'browser',
+  'browser_version',
+  'device',
+  'brand',
+  'model',
+  'sdk_name',
+  'sdk_version',
+  'profile_id',
+  'session_id',
+  'device_id',
+  'revenue',
+] as const;
+
+export type IEventColumn = (typeof EVENT_COLUMNS)[number];
+
+export async function listEventPropertiesCore(input: {
+  projectId: string;
+  eventName?: string;
+}): Promise<{
+  columns: readonly string[];
+  properties: Array<{ property_key: string; event_name: string }>;
+}> {
+  const builder = clix(ch)
+    .select<{ property_key: string; event_name: string }>([
+      'distinct property_key',
+      'name as event_name',
+    ])
+    .from(TABLE_NAMES.event_property_values_mv)
+    .where('project_id', '=', input.projectId)
+    .orderBy('property_key', 'ASC')
+    .limit(500);
+
+  if (input.eventName) {
+    builder.where('name', '=', input.eventName);
+  }
+
+  const rows = await builder.execute();
+  return { columns: EVENT_COLUMNS, properties: rows };
+}
+
+export async function getEventPropertyValuesCore(input: {
+  projectId: string;
+  eventName: string;
+  propertyKey: string;
+}): Promise<{ event: string; property: string; values: string[] }> {
+  const rows = await clix(ch)
+    .select<{ value: string }>(['property_value as value'])
+    .from(TABLE_NAMES.event_property_values_mv)
+    .where('project_id', '=', input.projectId)
+    .where('name', '=', input.eventName)
+    .where('property_key', '=', input.propertyKey)
+    .orderBy('created_at', 'DESC')
+    .limit(200)
+    .execute();
+
+  return {
+    event: input.eventName,
+    property: input.propertyKey,
+    values: rows.map((r) => r.value),
+  };
+}
+
+export interface QueryEventsInput {
+  projectId: string;
+  startDate?: string;
+  endDate?: string;
+  eventNames?: string[];
+  path?: string;
+  country?: string;
+  city?: string;
+  device?: string;
+  browser?: string;
+  os?: string;
+  referrer?: string;
+  referrerName?: string;
+  referrerType?: string;
+  sessionId?: string;
+  profileId?: string;
+  profileIds?: string[];
+  properties?: Record<string, string>;
+  filters?: IChartEventFilter[];
+  limit?: number;
+}
+
+export async function queryEventsCore(
+  input: QueryEventsInput,
+): Promise<IClickhouseEvent[]> {
+  const builder = clix(ch)
+    .select<IClickhouseEvent>([])
+    .from(TABLE_NAMES.events)
+    .where('project_id', '=', input.projectId);
+
+  if (input.sessionId) {
+    builder.where('session_id', '=', input.sessionId);
+  }
+
+  if (input.profileId) {
+    builder.where('profile_id', '=', input.profileId);
+  }
+
+  if (input.profileIds?.length) {
+    builder.where('profile_id', 'IN', input.profileIds);
+  }
+
+  if (input.eventNames?.length) {
+    builder.where('name', 'IN', input.eventNames);
+  }
+
+  if (input.path) {
+    builder.where('path', '=', input.path);
+  }
+
+  if (input.referrer) {
+    builder.where('referrer', '=', input.referrer);
+  }
+
+  if (input.referrerName) {
+    builder.where('referrer_name', '=', input.referrerName);
+  }
+
+  if (input.referrerType) {
+    builder.where('referrer_type', '=', input.referrerType);
+  }
+
+  if (input.device) {
+    builder.where('device', '=', input.device);
+  }
+
+  if (input.country) {
+    builder.where('country', '=', input.country);
+  }
+
+  if (input.city) {
+    builder.where('city', '=', input.city);
+  }
+
+  if (input.os) {
+    builder.where('os', '=', input.os);
+  }
+
+  if (input.browser) {
+    builder.where('browser', '=', input.browser);
+  }
+
+  if (input.properties) {
+    for (const [key, value] of Object.entries(input.properties)) {
+      builder.rawWhere(`properties[${sqlstring.escape(key)}] = ${sqlstring.escape(value)}`);
+    }
+  }
+
+  // Skip the default 30-day date filter when sessionId is set — a
+  // session id is unique and narrow enough to query directly. Without
+  // this, an older session's events would be silently excluded.
+  if (!input.sessionId) {
+    const { startDate: start, endDate: end } = resolveDateRange(
+      input.startDate,
+      input.endDate,
+    );
+    builder.where('created_at', 'BETWEEN', [
+      clix.datetime(start),
+      clix.datetime(end),
+    ]);
+  } else if (input.startDate || input.endDate) {
+    // If caller still wants to scope by date, honor it.
+    const { startDate: start, endDate: end } = resolveDateRange(
+      input.startDate,
+      input.endDate,
+    );
+    builder.where('created_at', 'BETWEEN', [
+      clix.datetime(start),
+      clix.datetime(end),
+    ]);
+  }
+
+  if (input.filters?.length) {
+    const filterClauses = buildFilterWhere(input.filters, input.projectId, {
+      selfTable: 'events',
+      profileIdExpr: 'profile_id',
+      groupsExpr: 'groups',
+    });
+    for (const clause of Object.values(filterClauses)) {
+      builder.rawWhere(clause);
+    }
+  }
+
+  return builder.limit(input.limit ?? 20).execute();
+}

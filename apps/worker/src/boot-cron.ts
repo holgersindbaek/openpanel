@@ -3,6 +3,30 @@ import { cronQueue } from '@openpanel/queue';
 
 import { logger } from './utils/logger';
 
+async function removeConflictingJobs(schedulerKey: string) {
+  // Remove any existing jobs that might conflict with the scheduler
+  // BullMQ scheduler jobs have IDs like "repeat:<key>:<timestamp>"
+  const jobStates = ['delayed', 'waiting', 'completed', 'failed'] as const;
+
+  for (const state of jobStates) {
+    try {
+      const jobs = await cronQueue.getJobs([state]);
+      for (const job of jobs) {
+        // Check if this job was created by the scheduler we're about to upsert
+        if (job.id?.startsWith(`repeat:${schedulerKey}:`)) {
+          await job.remove();
+          logger.info(
+            { jobId: job.id, schedulerKey },
+            'Removed conflicting scheduler job',
+          );
+        }
+      }
+    } catch (error) {
+      // Ignore errors during cleanup
+    }
+  }
+}
+
 export async function bootCron() {
   const jobs: {
     name: string;
@@ -27,20 +51,51 @@ export async function bootCron() {
     {
       name: 'flush',
       type: 'flushProfiles',
-      pattern: 1000 * 60,
+      pattern: 1000 * 10,
     },
     {
       name: 'flush',
       type: 'flushSessions',
       pattern: 1000 * 10,
     },
+    {
+      name: 'flush',
+      type: 'flushProfileBackfill',
+      pattern: 1000 * 30,
+    },
+    {
+      name: 'flush',
+      type: 'flushReplay',
+      pattern: 1000 * 10,
+    },
+    {
+      name: 'flush',
+      type: 'flushGroups',
+      pattern: 1000 * 10,
+    },
+    {
+      name: 'insightsDaily',
+      type: 'insightsDaily',
+      pattern: '0 2 * * *',
+    },
+    {
+      name: 'onboarding',
+      type: 'onboarding',
+      pattern: '0 * * * *',
+    },
+    {
+      name: 'gscSync',
+      type: 'gscSync',
+      pattern: '0 3 * * *',
+    },
+    {
+      name: 'cohortRefresh',
+      type: 'cohortRefresh',
+      pattern: '*/30 * * * *',
+    },
   ];
 
-  if (
-    (process.env.NEXT_PUBLIC_SELF_HOSTED === 'true' ||
-      process.env.SELF_HOSTED) &&
-    process.env.NODE_ENV === 'production'
-  ) {
+  if (process.env.SELF_HOSTED && process.env.NODE_ENV === 'production') {
     jobs.push({
       name: 'ping',
       type: 'ping',
@@ -48,43 +103,100 @@ export async function bootCron() {
     });
   }
 
-  // Add repeatable jobs
-  for (const job of jobs) {
-    await cronQueue.add(
-      job.name,
-      {
-        type: job.type,
-        payload: undefined,
-      },
-      {
-        jobId: job.type,
-        repeat:
-          typeof job.pattern === 'number'
-            ? {
-                every: job.pattern,
-              }
-            : {
-                pattern: job.pattern,
-              },
-      },
-    );
+  logger.info('Updating cron jobs');
+
+  const jobsToKeep = new Set(jobs.map((job) => job.type));
+
+  const currentJobSchedulers = await cronQueue
+    .getJobSchedulers()
+    .catch((error) => {
+      logger.error({ err: error }, 'Error getting job schedulers');
+      return [];
+    });
+  for (const jobScheduler of currentJobSchedulers) {
+    if (!jobsToKeep.has(jobScheduler.key as CronQueueType)) {
+      await cronQueue.removeJobScheduler(jobScheduler.key).catch((error) => {
+        logger.error(
+          { err: error, jobScheduler: jobScheduler.key },
+          'Error removing job scheduler',
+        );
+      });
+    }
   }
 
-  // Remove outdated repeatable jobs
-  const repeatableJobs = await cronQueue.getRepeatableJobs();
-  for (const repeatableJob of repeatableJobs) {
-    const match = jobs.find(
-      (job) => `${job.name}:${job.type}:::${job.pattern}` === repeatableJob.key,
-    );
-    if (match) {
-      logger.info('Repeatable job exists', {
-        key: repeatableJob.key,
-      });
-    } else {
-      logger.info('Removing repeatable job', {
-        key: repeatableJob.key,
-      });
-      cronQueue.removeRepeatableByKey(repeatableJob.key);
+  for (const job of jobs) {
+    try {
+      await cronQueue.upsertJobScheduler(
+        job.type,
+        typeof job.pattern === 'number'
+          ? {
+              every: job.pattern,
+            }
+          : {
+              pattern: job.pattern,
+            },
+        {
+          data: {
+            type: job.type,
+            payload: undefined,
+          },
+        },
+      );
+    } catch (error) {
+      // If upsert fails due to conflicting job, try to clean up and retry
+      const isConflictError =
+        error instanceof Error &&
+        error.message.includes('job ID already exists');
+
+      if (isConflictError) {
+        logger.warn(
+          { job: job.type },
+          'Job scheduler conflict detected, attempting cleanup',
+        );
+
+        await removeConflictingJobs(job.type);
+
+        // Also try removing the scheduler itself to start fresh
+        try {
+          await cronQueue.removeJobScheduler(job.type);
+        } catch {
+          // Ignore - scheduler might not exist
+        }
+
+        // Retry the upsert
+        try {
+          await cronQueue.upsertJobScheduler(
+            job.type,
+            typeof job.pattern === 'number'
+              ? {
+                  every: job.pattern,
+                }
+              : {
+                  pattern: job.pattern,
+                },
+            {
+              data: {
+                type: job.type,
+                payload: undefined,
+              },
+            },
+          );
+          logger.info(
+            { job: job.type },
+            'Job scheduler created after cleanup',
+          );
+        } catch (retryError) {
+          logger.error(
+            { err: retryError, job: job.type },
+            'Error upserting job scheduler after cleanup',
+          );
+        }
+      } else {
+        logger.error(
+          { err: error, job: job.type },
+          'Error upserting job scheduler',
+        );
+      }
     }
   }
 }

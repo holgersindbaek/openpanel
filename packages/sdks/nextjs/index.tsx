@@ -1,8 +1,3 @@
-// adding .js next/script import fixes an issues
-// with esm and nextjs (when using pages dir)
-import Script from 'next/script.js';
-import React from 'react';
-
 import type {
   DecrementPayload,
   IdentifyPayload,
@@ -11,6 +6,12 @@ import type {
   OpenPanelOptions,
   TrackProperties,
 } from '@openpanel/web';
+import { getInitSnippet } from '@openpanel/web';
+// adding .js next/script import fixes an issues
+// with esm and nextjs (when using pages dir)
+import Script from 'next/script.js';
+// biome-ignore lint/correctness/noUnusedImports: nextjs requires this
+import React from 'react';
 
 export * from '@openpanel/web';
 
@@ -18,9 +19,12 @@ const CDN_URL = 'https://openpanel.dev/op1.js';
 
 type OpenPanelComponentProps = Omit<OpenPanelOptions, 'filter'> & {
   profileId?: string;
+  /** @deprecated Use `scriptUrl` instead. */
   cdnUrl?: string;
+  scriptUrl?: string;
   filter?: string;
   globalProperties?: Record<string, unknown>;
+  strategy?: 'beforeInteractive' | 'afterInteractive' | 'lazyOnload' | 'worker';
 };
 
 const stringify = (obj: unknown) => {
@@ -40,7 +44,9 @@ const stringify = (obj: unknown) => {
 export function OpenPanelComponent({
   profileId,
   cdnUrl,
+  scriptUrl,
   globalProperties,
+  strategy = 'afterInteractive',
   ...options
 }: OpenPanelComponentProps) {
   const methods: { name: OpenPanelMethodNames; value: unknown }[] = [
@@ -67,19 +73,28 @@ export function OpenPanelComponent({
       value: globalProperties,
     });
   }
+
+  const appendVersion = (url: string) => {
+    if (url.endsWith('.js')) {
+      return `${url}?v=${process.env.NEXTJS_VERSION!}`;
+    }
+    return url;
+  };
+
   return (
     <>
-      <Script src={cdnUrl ?? CDN_URL} async defer />
+      <Script async defer src={appendVersion(scriptUrl || cdnUrl || CDN_URL)} />
       <Script
-        strategy="beforeInteractive"
         dangerouslySetInnerHTML={{
-          __html: `window.op = window.op || function(...args) {(window.op.q = window.op.q || []).push(args)};
+          __html: `${getInitSnippet()}
           ${methods
             .map((method) => {
               return `window.op('${method.name}', ${stringify(method.value)});`;
             })
             .join('\n')}`,
         }}
+        id="openpanel-init"
+        strategy={strategy}
       />
     </>
   );
@@ -89,25 +104,21 @@ type IdentifyComponentProps = IdentifyPayload;
 
 export function IdentifyComponent(props: IdentifyComponentProps) {
   return (
-    <>
-      <Script
-        dangerouslySetInnerHTML={{
-          __html: `window.op('identify', ${JSON.stringify(props)});`,
-        }}
-      />
-    </>
+    <Script
+      dangerouslySetInnerHTML={{
+        __html: `window.op('identify', ${JSON.stringify(props)});`,
+      }}
+    />
   );
 }
 
 export function SetGlobalPropertiesComponent(props: Record<string, unknown>) {
   return (
-    <>
-      <Script
-        dangerouslySetInnerHTML={{
-          __html: `window.op('setGlobalProperties', ${JSON.stringify(props)});`,
-        }}
-      />
-    </>
+    <Script
+      dangerouslySetInnerHTML={{
+        __html: `window.op('setGlobalProperties', ${JSON.stringify(props)});`,
+      }}
+    />
   );
 }
 
@@ -120,6 +131,12 @@ export function useOpenPanel() {
     decrement,
     clear,
     setGlobalProperties,
+    revenue,
+    flushRevenue,
+    clearRevenue,
+    pendingRevenue,
+    fetchDeviceId,
+    getDeviceId,
   };
 }
 
@@ -135,7 +152,7 @@ function screenView(properties?: TrackProperties): void;
 function screenView(path: string, properties?: TrackProperties): void;
 function screenView(
   pathOrProperties?: string | TrackProperties,
-  propertiesOrUndefined?: TrackProperties,
+  propertiesOrUndefined?: TrackProperties
 ) {
   window.op?.('screenView', pathOrProperties, propertiesOrUndefined);
 }
@@ -150,6 +167,25 @@ function increment(payload: IncrementPayload) {
 
 function decrement(payload: DecrementPayload) {
   window.op('decrement', payload);
+}
+
+function fetchDeviceId() {
+  return window.op.fetchDeviceId();
+}
+function getDeviceId() {
+  return window.op.getDeviceId();
+}
+function clearRevenue() {
+  window.op.clearRevenue();
+}
+function pendingRevenue(amount: number, properties?: Record<string, unknown>) {
+  window.op.pendingRevenue(amount, properties);
+}
+function revenue(amount: number, properties?: Record<string, unknown>) {
+  return window.op.revenue(amount, properties);
+}
+function flushRevenue() {
+  return window.op.flushRevenue();
 }
 
 function clear() {

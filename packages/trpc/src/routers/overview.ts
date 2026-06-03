@@ -1,31 +1,85 @@
 import {
-  getOrganizationSubscriptionChartEndDate,
-  getSettingsForProject,
-  overviewService,
-  zGetMetricsInput,
-  zGetTopGenericInput,
-  zGetTopPagesInput,
-} from '@openpanel/db';
-import { type IChartRange, zRange } from '@openpanel/validation';
-import { format } from 'date-fns';
-import { z } from 'zod';
-import { cacheMiddleware, createTRPCRouter, publicProcedure } from '../trpc';
-import {
+  TABLE_NAMES,
+  ch,
+  clix,
+  eventBuffer,
   getChartPrevStartEndDate,
   getChartStartEndDate,
-} from './chart.helpers';
+  getConversionEventNames,
+  getOrganizationSubscriptionChartEndDate,
+  getReferrerSpikes,
+  getSettingsForProject,
+  overviewService,
+  validateOverviewShareAccess,
+  zGetMapDataInput,
+  zGetMetricsInput,
+  zGetTopEventsInput,
+  zGetTopGenericInput,
+  zGetTopGenericSeriesInput,
+  zGetTopLinkOutInput,
+  zGetTopPagesInput,
+  zGetUserJourneyInput,
+} from '@openpanel/db';
+import { pageContextSchema, type IChartRange, zRange } from '@openpanel/validation';
+import { format } from 'date-fns';
+import { z } from 'zod';
+import { getProjectAccess } from '../access';
+import { runFilterCommand } from '../agents/filter-command';
+import { TRPCAccessError } from '../errors';
+import {
+  cacheMiddleware,
+  createTRPCRouter,
+  protectedProcedure,
+  publicProcedure,
+} from '../trpc';
 
-const cacher = cacheMiddleware((input) => {
+const cacher = cacheMiddleware((input, opts) => {
   const range = input.range as IChartRange;
+  if (opts.path === 'overview.liveData') {
+    return 0;
+  }
+
   switch (range) {
     case '30min':
     case 'today':
     case 'lastHour':
+    case 'last24h':
       return 1;
     default:
       return 1;
   }
 });
+
+const overviewProcedure = publicProcedure.use(
+  async ({ ctx, next, getRawInput }) => {
+    const rawInput = (await getRawInput()) as {
+      projectId: string;
+      shareId?: string;
+    };
+
+    if (rawInput.shareId) {
+      await validateOverviewShareAccess(rawInput.shareId, rawInput.projectId, {
+        cookies: ctx.cookies,
+        session: ctx.session?.userId
+          ? { userId: ctx.session.userId }
+          : undefined,
+      });
+    } else {
+      if (!ctx.session?.userId) {
+        throw TRPCAccessError('Authentication required');
+      }
+      const access = await getProjectAccess({
+        projectId: rawInput.projectId,
+        userId: ctx.session.userId,
+      });
+      if (!access) {
+        throw TRPCAccessError('You do not have access to this project');
+      }
+    }
+
+    return next();
+  },
+);
 
 function getCurrentAndPrevious<
   T extends {
@@ -78,16 +132,137 @@ function getCurrentAndPrevious<
 }
 
 export const overviewRouter = createTRPCRouter({
-  stats: publicProcedure
+  liveVisitors: overviewProcedure
+    .input(z.object({ projectId: z.string(), shareId: z.string().optional() }))
+    .query(async ({ input }) => {
+      return eventBuffer.getActiveVisitorCount(input.projectId);
+    }),
+
+  liveData: overviewProcedure
+    .input(z.object({ projectId: z.string(), shareId: z.string().optional() }))
+    .use(cacher)
+    .query(async ({ input }) => {
+      const { timezone } = await getSettingsForProject(input.projectId);
+
+      // Get total unique sessions in the last 30 minutes
+      const totalSessionsQuery = clix(ch, timezone)
+        .select<{ total_sessions: number }>([
+          'uniq(session_id) as total_sessions',
+        ])
+        .from(TABLE_NAMES.events)
+        .where('project_id', '=', input.projectId)
+        .where('created_at', '>=', clix.exp('now() - INTERVAL 30 MINUTE'));
+
+      // Get counts per minute for the last 30 minutes
+      const minuteCountsQuery = clix(ch, timezone)
+        .select<{
+          minute: string;
+          session_count: number;
+          visitor_count: number;
+        }>([
+          `${clix.toStartOf('created_at', 'minute')} as minute`,
+          'uniq(session_id) as session_count',
+          'uniq(profile_id) as visitor_count',
+        ])
+        .from(TABLE_NAMES.events)
+        .where('project_id', '=', input.projectId)
+        .where('created_at', '>=', clix.exp('now() - INTERVAL 30 MINUTE'))
+        .groupBy(['minute'])
+        .orderBy('minute', 'ASC')
+        .fill(
+          clix.exp('toStartOfMinute(now() - INTERVAL 30 MINUTE)'),
+          clix.exp('toStartOfMinute(now())'),
+          clix.exp('INTERVAL 1 MINUTE'),
+        );
+
+      // Get referrers per minute for the last 30 minutes
+      const minuteReferrersQuery = clix(ch, timezone)
+        .select<{
+          minute: string;
+          referrer_name: string;
+          count: number;
+        }>([
+          `${clix.toStartOf('created_at', 'minute')} as minute`,
+          'referrer_name',
+          'uniq(session_id) as count',
+        ])
+        .from(TABLE_NAMES.events)
+        .where('project_id', '=', input.projectId)
+        .where('created_at', '>=', clix.exp('now() - INTERVAL 30 MINUTE'))
+        .where('referrer_name', '!=', '')
+        .where('referrer_name', 'IS NOT NULL')
+        .groupBy(['minute', 'referrer_name'])
+        .orderBy('minute', 'ASC')
+        .orderBy('count', 'DESC');
+
+      // Get unique referrers in the last 30 minutes
+      const referrersQuery = clix(ch, timezone)
+        .select<{ referrer: string; count: number }>([
+          'referrer_name as referrer',
+          'uniq(session_id) as count',
+        ])
+        .from(TABLE_NAMES.events)
+        .where('project_id', '=', input.projectId)
+        .where('created_at', '>=', clix.exp('now() - INTERVAL 30 MINUTE'))
+        .where('referrer_name', '!=', '')
+        .where('referrer_name', 'IS NOT NULL')
+        .groupBy(['referrer_name'])
+        .orderBy('count', 'DESC')
+        .limit(10);
+
+      const [totalSessions, minuteCounts, minuteReferrers, referrers] =
+        await Promise.all([
+          totalSessionsQuery.execute(),
+          minuteCountsQuery.execute(),
+          minuteReferrersQuery.execute(),
+          referrersQuery.execute(),
+        ]);
+
+      // Group referrers by minute
+      const referrersByMinute = new Map<
+        string,
+        Array<{ referrer: string; count: number }>
+      >();
+      minuteReferrers.forEach((item) => {
+        if (!referrersByMinute.has(item.minute)) {
+          referrersByMinute.set(item.minute, []);
+        }
+        referrersByMinute.get(item.minute)!.push({
+          referrer: item.referrer_name,
+          count: item.count,
+        });
+      });
+
+      return {
+        totalSessions: totalSessions[0]?.total_sessions || 0,
+        minuteCounts: minuteCounts.map((item) => ({
+          minute: item.minute,
+          sessionCount: item.session_count,
+          visitorCount: item.visitor_count,
+          timestamp: new Date(item.minute).getTime(),
+          time: new Date(item.minute).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+          referrers: referrersByMinute.get(item.minute) || [],
+        })),
+        referrers: referrers.map((item) => ({
+          referrer: item.referrer,
+          count: item.count,
+        })),
+      };
+    }),
+  stats: overviewProcedure
     .input(
       zGetMetricsInput.omit({ startDate: true, endDate: true }).extend({
         startDate: z.string().nullish(),
         endDate: z.string().nullish(),
         range: zRange,
+        shareId: z.string().optional(),
       }),
     )
     .use(cacher)
-    .query(async ({ ctx, input }) => {
+    .query(async ({ input }) => {
       const { timezone } = await getSettingsForProject(input.projectId);
       const { current, previous } = await getCurrentAndPrevious(
         { ...input, timezone },
@@ -104,6 +279,7 @@ export const overviewRouter = createTRPCRouter({
             previous?.metrics.avg_session_duration || null,
           prev_views_per_session: previous?.metrics.views_per_session || null,
           prev_total_sessions: previous?.metrics.total_sessions || null,
+          prev_total_revenue: previous?.metrics.total_revenue || null,
         },
         series: current.series.map((item, index) => {
           const prev = previous?.series[index];
@@ -116,18 +292,55 @@ export const overviewRouter = createTRPCRouter({
             prev_avg_session_duration: prev?.avg_session_duration,
             prev_views_per_session: prev?.views_per_session,
             prev_total_sessions: prev?.total_sessions,
+            prev_total_revenue: prev?.total_revenue,
           };
         }),
       };
     }),
 
-  topPages: publicProcedure
+  getReferrerSpikes: overviewProcedure
+    .input(
+      zGetMetricsInput.omit({ startDate: true, endDate: true }).extend({
+        startDate: z.string().nullish(),
+        endDate: z.string().nullish(),
+        range: zRange,
+        shareId: z.string().optional(),
+      }),
+    )
+    .use(cacher)
+    .query(async ({ input }) => {
+      const { timezone } = await getSettingsForProject(input.projectId);
+      const { startDate, endDate } = getChartStartEndDate(input, timezone);
+      const clusters = await getReferrerSpikes({
+        projectId: input.projectId,
+        filters: input.filters,
+        interval: input.interval,
+        startDate,
+        endDate,
+        timezone,
+      });
+      // Reformat every spike date (and the cluster's anchor) to match
+      // overview.stats' series date format, so markers x-align with the
+      // chart's data points (xScale matches by Date identity).
+      const fmt = (iso: string) =>
+        format(new Date(iso), 'yyyy-MM-dd HH:mm:ss');
+      return clusters.map((cluster) => ({
+        anchorDate: fmt(cluster.anchorDate),
+        spikes: cluster.spikes.map((spike) => ({
+          ...spike,
+          date: fmt(spike.date),
+        })),
+      }));
+    }),
+
+  topPages: overviewProcedure
     .input(
       zGetTopPagesInput.omit({ startDate: true, endDate: true }).extend({
         startDate: z.string().nullish(),
         endDate: z.string().nullish(),
         range: zRange,
         mode: z.enum(['page', 'entry', 'exit', 'bot']),
+        shareId: z.string().optional(),
       }),
     )
     .use(cacher)
@@ -156,12 +369,60 @@ export const overviewRouter = createTRPCRouter({
       return current;
     }),
 
-  topGeneric: publicProcedure
+  topGeneric: overviewProcedure
     .input(
       zGetTopGenericInput.omit({ startDate: true, endDate: true }).extend({
         startDate: z.string().nullish(),
         endDate: z.string().nullish(),
         range: zRange,
+        shareId: z.string().optional(),
+      }),
+    )
+    .use(cacher)
+    .query(async ({ input }) => {
+      console.log('input', input);
+
+      const { timezone } = await getSettingsForProject(input.projectId);
+      const { current } = await getCurrentAndPrevious(
+        { ...input, timezone },
+        false,
+        timezone,
+      )(overviewService.getTopGeneric.bind(overviewService));
+
+      return current;
+    }),
+
+  topGenericSeries: overviewProcedure
+    .input(
+      zGetTopGenericSeriesInput
+        .omit({ startDate: true, endDate: true })
+        .extend({
+          startDate: z.string().nullish(),
+          endDate: z.string().nullish(),
+          range: zRange,
+          shareId: z.string().optional(),
+        }),
+    )
+    .use(cacher)
+    .query(async ({ input }) => {
+      const { timezone } = await getSettingsForProject(input.projectId);
+      const { current } = await getCurrentAndPrevious(
+        { ...input, timezone },
+        false,
+        timezone,
+      )(overviewService.getTopGenericSeries.bind(overviewService));
+
+      return current;
+    }),
+
+  userJourney: overviewProcedure
+    .input(
+      zGetUserJourneyInput.omit({ startDate: true, endDate: true }).extend({
+        startDate: z.string().nullish(),
+        endDate: z.string().nullish(),
+        range: zRange,
+        steps: z.number().min(2).max(10).default(5).optional(),
+        shareId: z.string().optional(),
       }),
     )
     .use(cacher)
@@ -171,7 +432,109 @@ export const overviewRouter = createTRPCRouter({
         { ...input, timezone },
         false,
         timezone,
-      )(overviewService.getTopGeneric.bind(overviewService));
+      )(async (input) => {
+        return overviewService.getUserJourney({
+          ...input,
+          steps: input.steps ?? 5,
+          timezone,
+        });
+      });
+
+      return current;
+    }),
+
+  topEvents: overviewProcedure
+    .input(
+      zGetTopEventsInput.omit({ startDate: true, endDate: true }).extend({
+        startDate: z.string().nullish(),
+        endDate: z.string().nullish(),
+        range: zRange,
+        shareId: z.string().optional(),
+      }),
+    )
+    .use(cacher)
+    .query(async ({ input }) => {
+      const { timezone } = await getSettingsForProject(input.projectId);
+      const { current } = await getCurrentAndPrevious(
+        { ...input, timezone },
+        false,
+        timezone,
+      )(overviewService.getTopEvents.bind(overviewService));
+
+      return current;
+    }),
+
+  topConversions: overviewProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        shareId: z.string().optional(),
+      }),
+    )
+    .query(async ({ input }) => {
+      return getConversionEventNames(input.projectId);
+    }),
+
+  topLinkOut: overviewProcedure
+    .input(
+      zGetTopLinkOutInput.omit({ startDate: true, endDate: true }).extend({
+        startDate: z.string().nullish(),
+        endDate: z.string().nullish(),
+        range: zRange,
+        shareId: z.string().optional(),
+      }),
+    )
+    .use(cacher)
+    .query(async ({ input }) => {
+      const { timezone } = await getSettingsForProject(input.projectId);
+      const { current } = await getCurrentAndPrevious(
+        { ...input, timezone },
+        false,
+        timezone,
+      )(overviewService.getTopLinkOut.bind(overviewService));
+
+      return current;
+    }),
+
+  // One-shot AI command bar — converts natural-language requests
+  // ("show 7 aug to 11 aug", "from google", "mobile only for august
+  // last year") into structured filter changes the dashboard can apply
+  // through the same handlers the chat panel uses.
+  runFilterCommand: protectedProcedure
+    .input(
+      z.object({
+        projectId: z.string(),
+        query: z.string().min(1).max(500),
+        pageContext: pageContextSchema.optional(),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const { timezone } = await getSettingsForProject(input.projectId);
+      return runFilterCommand({
+        query: input.query,
+        projectId: input.projectId,
+        pageContext: input.pageContext,
+        timezone: timezone || 'UTC',
+      });
+    }),
+
+  map: overviewProcedure
+    .input(
+      zGetMapDataInput.omit({ startDate: true, endDate: true }).extend({
+        startDate: z.string().nullish(),
+        endDate: z.string().nullish(),
+        range: zRange,
+        shareId: z.string().optional(),
+      }),
+    )
+    .use(cacher)
+    .query(async ({ input }) => {
+      const { timezone } = await getSettingsForProject(input.projectId);
+      const { current } = await getCurrentAndPrevious(
+        { ...input, timezone },
+        false,
+        timezone,
+      )(overviewService.getMapData.bind(overviewService));
 
       return current;
     }),

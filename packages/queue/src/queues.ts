@@ -1,17 +1,61 @@
-import { Queue, QueueEvents } from 'bullmq';
+import { createHash } from 'node:crypto';
+import type {
+  IServiceCreateEventPayload,
+  IServiceEvent,
+  Prisma,
+} from '@openpanel/db';
+import { createLogger } from '@openpanel/logger';
+import { getRedisGroupQueue, getRedisQueue } from '@openpanel/redis';
+import { Queue } from 'bullmq';
+import { Queue as GroupQueue } from 'groupmq';
+import type { ITrackPayload } from '../../validation';
 
-import type { IServiceEvent, Notification } from '@openpanel/db';
-import { getRedisQueue } from '@openpanel/redis';
-import type { TrackPayload } from '@openpanel/sdk';
+export const EVENTS_GROUP_QUEUES_SHARDS = Number.parseInt(
+  process.env.EVENTS_GROUP_QUEUES_SHARDS || '1',
+  10
+);
+
+export const getQueueName = (name: string) =>
+  process.env.QUEUE_CLUSTER ? `{${name}}` : name;
+
+function pickShard(projectId: string) {
+  const h = createHash('sha1').update(projectId).digest(); // 20 bytes
+  // take first 4 bytes as unsigned int
+  const x = h.readUInt32BE(0);
+  return x % EVENTS_GROUP_QUEUES_SHARDS; // 0..n-1
+}
+
+export const queueLogger = createLogger({ name: 'queue' });
 
 export interface EventsQueuePayloadIncomingEvent {
   type: 'incomingEvent';
   payload: {
     projectId: string;
-    event: TrackPayload & {
-      timestamp: string;
+    event: ITrackPayload & {
+      timestamp: string | number;
       isTimestampFromThePast: boolean;
     };
+    uaInfo:
+      | {
+          readonly isServer: true;
+          readonly device: 'server';
+          readonly os: '';
+          readonly osVersion: '';
+          readonly browser: '';
+          readonly browserVersion: '';
+          readonly brand: '';
+          readonly model: '';
+        }
+      | {
+          readonly os: string | undefined;
+          readonly osVersion: string | undefined;
+          readonly browser: string | undefined;
+          readonly browserVersion: string | undefined;
+          readonly device: string;
+          readonly brand: string | undefined;
+          readonly model: string | undefined;
+          readonly isServer: false;
+        };
     geo: {
       country: string | undefined;
       city: string | undefined;
@@ -20,24 +64,18 @@ export interface EventsQueuePayloadIncomingEvent {
       latitude: number | undefined;
     };
     headers: Record<string, string | undefined>;
-    currentDeviceId: string;
-    previousDeviceId: string;
+    deviceId: string;
+    sessionId: string;
   };
 }
 export interface EventsQueuePayloadCreateEvent {
   type: 'createEvent';
   payload: Omit<IServiceEvent, 'id'>;
 }
-type SessionEndRequired =
-  | 'sessionId'
-  | 'deviceId'
-  | 'profileId'
-  | 'projectId'
-  | 'createdAt';
+
 export interface EventsQueuePayloadCreateSessionEnd {
   type: 'createSessionEnd';
-  payload: Partial<Omit<IServiceEvent, SessionEndRequired>> &
-    Pick<IServiceEvent, SessionEndRequired>;
+  payload: IServiceCreateEventPayload;
 }
 
 // TODO: Rename `EventsQueuePayloadCreateSessionEnd`
@@ -72,13 +110,48 @@ export type CronQueuePayloadProject = {
   type: 'deleteProjects';
   payload: undefined;
 };
+export type CronQueuePayloadInsightsDaily = {
+  type: 'insightsDaily';
+  payload: undefined;
+};
+export type CronQueuePayloadOnboarding = {
+  type: 'onboarding';
+  payload: undefined;
+};
+export type CronQueuePayloadFlushProfileBackfill = {
+  type: 'flushProfileBackfill';
+  payload: undefined;
+};
+export type CronQueuePayloadFlushReplay = {
+  type: 'flushReplay';
+  payload: undefined;
+};
+export type CronQueuePayloadGscSync = {
+  type: 'gscSync';
+  payload: undefined;
+};
+export type CronQueuePayloadFlushGroups = {
+  type: 'flushGroups';
+  payload: undefined;
+};
+export type CronQueuePayloadCohortRefresh = {
+  type: 'cohortRefresh';
+  payload: undefined;
+};
 export type CronQueuePayload =
   | CronQueuePayloadSalt
   | CronQueuePayloadFlushEvents
   | CronQueuePayloadFlushSessions
   | CronQueuePayloadFlushProfiles
+  | CronQueuePayloadFlushProfileBackfill
+  | CronQueuePayloadFlushReplay
+  | CronQueuePayloadFlushGroups
   | CronQueuePayloadPing
-  | CronQueuePayloadProject;
+  | CronQueuePayloadProject
+  | CronQueuePayloadInsightsDaily
+  | CronQueuePayloadOnboarding
+  | CronQueuePayloadGscSync
+  | CronQueuePayloadCohortRefresh;
 
 export type MiscQueuePayloadTrialEndingSoon = {
   type: 'trialEndingSoon';
@@ -91,36 +164,67 @@ export type MiscQueuePayload = MiscQueuePayloadTrialEndingSoon;
 
 export type CronQueueType = CronQueuePayload['type'];
 
-export const eventsQueue = new Queue<EventsQueuePayload>('events', {
-  connection: getRedisQueue(),
-  defaultJobOptions: {
-    removeOnComplete: 10,
-    attempts: 3,
-    backoff: {
-      type: 'exponential',
-      delay: 1000,
+const orderingDelayMs = Number.parseInt(
+  process.env.ORDERING_DELAY_MS || '100',
+  10
+);
+
+const autoBatchMaxWaitMs = Number.parseInt(
+  process.env.AUTO_BATCH_MAX_WAIT_MS || '0',
+  10
+);
+const autoBatchSize = Number.parseInt(process.env.AUTO_BATCH_SIZE || '0', 10);
+
+export const eventsGroupQueues = Array.from({
+  length: EVENTS_GROUP_QUEUES_SHARDS,
+}).map(
+  (_, index, list) =>
+    new GroupQueue<EventsQueuePayloadIncomingEvent['payload']>({
+      logger: process.env.NODE_ENV === 'production' ? queueLogger : undefined,
+      namespace: getQueueName(
+        list.length === 1 ? 'group_events' : `group_events_${index}`
+      ),
+      redis: getRedisGroupQueue(),
+      keepCompleted: 1,
+      keepFailed: 10_000,
+      orderingDelayMs,
+      autoBatch:
+        autoBatchMaxWaitMs && autoBatchSize
+          ? {
+              maxWaitMs: autoBatchMaxWaitMs,
+              size: autoBatchSize,
+            }
+          : undefined,
+    })
+);
+
+export const getEventsGroupQueueShard = (groupId: string) => {
+  const shard = pickShard(groupId);
+  const queue = eventsGroupQueues[shard];
+  if (!queue) {
+    throw new Error(`Queue not found for group ${groupId}`);
+  }
+  return queue;
+};
+
+export const sessionsQueue = new Queue<SessionsQueuePayload>(
+  getQueueName('sessions'),
+  {
+    connection: getRedisQueue(),
+    defaultJobOptions: {
+      removeOnComplete: true,
     },
-  },
-});
+  }
+);
 
-export const sessionsQueue = new Queue<SessionsQueuePayload>('sessions', {
-  connection: getRedisQueue(),
-  defaultJobOptions: {
-    removeOnComplete: 10,
-  },
-});
-export const sessionsQueueEvents = new QueueEvents('sessions', {
-  connection: getRedisQueue(),
-});
-
-export const cronQueue = new Queue<CronQueuePayload>('cron', {
+export const cronQueue = new Queue<CronQueuePayload>(getQueueName('cron'), {
   connection: getRedisQueue(),
   defaultJobOptions: {
     removeOnComplete: 10,
   },
 });
 
-export const miscQueue = new Queue<MiscQueuePayload>('misc', {
+export const miscQueue = new Queue<MiscQueuePayload>(getQueueName('misc'), {
   connection: getRedisQueue(),
   defaultJobOptions: {
     removeOnComplete: 10,
@@ -130,31 +234,84 @@ export const miscQueue = new Queue<MiscQueuePayload>('misc', {
 export type NotificationQueuePayload = {
   type: 'sendNotification';
   payload: {
-    notification: Notification;
+    notification: Prisma.NotificationUncheckedCreateInput;
   };
 };
 
 export const notificationQueue = new Queue<NotificationQueuePayload>(
-  'notification',
+  getQueueName('notification'),
   {
     connection: getRedisQueue(),
     defaultJobOptions: {
       removeOnComplete: 10,
     },
-  },
+  }
 );
 
-export function addTrialEndingSoonJob(organizationId: string, delay: number) {
-  return miscQueue.add(
-    'misc',
-    {
-      type: 'trialEndingSoon',
-      payload: {
-        organizationId,
-      },
+export type ImportQueuePayload = {
+  type: 'import';
+  payload: {
+    importId: string;
+  };
+};
+
+export const importQueue = new Queue<ImportQueuePayload>(
+  getQueueName('import'),
+  {
+    connection: getRedisQueue(),
+    defaultJobOptions: {
+      removeOnComplete: 10,
+      removeOnFail: 50,
     },
-    {
-      delay,
+  }
+);
+
+export type InsightsQueuePayloadProject = {
+  type: 'insightsProject';
+  payload: { projectId: string; date: string };
+};
+
+export const insightsQueue = new Queue<InsightsQueuePayloadProject>(
+  getQueueName('insights'),
+  {
+    connection: getRedisQueue(),
+    defaultJobOptions: {
+      removeOnComplete: 100,
     },
-  );
-}
+  }
+);
+
+export type GscQueuePayloadSync = {
+  type: 'gscProjectSync';
+  payload: { projectId: string };
+};
+export type GscQueuePayloadBackfill = {
+  type: 'gscProjectBackfill';
+  payload: { projectId: string };
+};
+export type GscQueuePayload = GscQueuePayloadSync | GscQueuePayloadBackfill;
+
+export const gscQueue = new Queue<GscQueuePayload>(getQueueName('gsc'), {
+  connection: getRedisQueue(),
+  defaultJobOptions: {
+    removeOnComplete: 50,
+    removeOnFail: 100,
+  },
+});
+
+export type CohortComputePayload = {
+  cohortId: string;
+};
+
+export const cohortComputeQueue = new Queue<CohortComputePayload>(
+  getQueueName('cohortCompute'),
+  {
+    connection: getRedisQueue(),
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 5000 },
+      removeOnComplete: { age: 3600 },
+      removeOnFail: { age: 86400 },
+    },
+  },
+);

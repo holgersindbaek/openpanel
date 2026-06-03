@@ -1,22 +1,19 @@
-import { isBot } from '@/bots';
 import { createBotEvent } from '@openpanel/db';
-import type { TrackHandlerPayload } from '@openpanel/sdk';
+import type {
+  DeprecatedPostEventPayload,
+  ITrackHandlerPayload,
+} from '@openpanel/validation';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-
-type DeprecatedEventPayload = {
-  name: string;
-  properties: Record<string, unknown>;
-  timestamp: string;
-};
+import { isBot } from '@/bots';
 
 export async function isBotHook(
   req: FastifyRequest<{
-    Body: TrackHandlerPayload | DeprecatedEventPayload;
+    Body: ITrackHandlerPayload | DeprecatedPostEventPayload;
   }>,
-  reply: FastifyReply,
+  reply: FastifyReply
 ) {
   const bot = req.headers['user-agent']
-    ? isBot(req.headers['user-agent'])
+    ? await isBot(req.headers['user-agent'])
     : null;
 
   if (bot && req.client?.projectId) {
@@ -46,6 +43,6 @@ export async function isBotHook(
       }
     }
 
-    return reply.status(202).send('OK');
+    return reply.status(202).send({ bot });
   }
 }
