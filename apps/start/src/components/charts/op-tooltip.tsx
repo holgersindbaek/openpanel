@@ -1,13 +1,14 @@
 import { getPreviousMetric } from '@openpanel/common';
 import type { IInterval } from '@openpanel/validation';
 import { type ReactNode, useMemo } from 'react';
-import { SerieIcon } from '@/components/report-chart/common/serie-icon';
 import { PreviousDiffIndicatorPure } from '../report-chart/common/previous-diff-indicator';
 import { useChart } from './chart-context';
 import type { ChartMarker } from './markers/marker-group';
-import type { OPReferrerSpikeItem } from './op-referrer-spikes';
 import { type OPReferenceItem, toChartMarkers } from './op-references';
+import type { OPReferrerSpikeItem } from './op-referrer-spikes';
 import { ChartTooltip, type ChartTooltipProps } from './tooltip/chart-tooltip';
+import { TooltipBox } from './tooltip/tooltip-box';
+import { SerieIcon } from '@/components/report-chart/common/serie-icon';
 import { useFormatDateInterval } from '@/hooks/use-format-date-interval';
 import { fancyMinutes, useNumber } from '@/hooks/use-numer-formatter';
 import { cn } from '@/utils/cn';
@@ -85,22 +86,25 @@ export function OPChartTooltip<T extends Record<string, unknown>>({
   );
 
   return (
-    <ChartTooltip
-      {...rest}
-      content={({ point }) => (
-        <OPTooltipBody
-          extra={extra ? extra(point as T) : null}
-          interval={interval}
-          minWidth={minWidth}
-          point={point as T}
-          referenceMarkers={referenceMarkers}
-          referencesLimit={referencesLimit}
-          rows={rows(point as T)}
-          spikes={spikes ?? null}
-          title={title ? title(point as T) : undefined}
-        />
-      )}
-    />
+    <>
+      <ChartTooltip
+        {...rest}
+        content={({ point }) => (
+          <OPTooltipBody
+            extra={extra ? extra(point as T) : null}
+            interval={interval}
+            minWidth={minWidth}
+            point={point as T}
+            referenceMarkers={referenceMarkers}
+            referencesLimit={referencesLimit}
+            rows={rows(point as T)}
+            spikes={spikes ?? null}
+            title={title ? title(point as T) : undefined}
+          />
+        )}
+      />
+      <OPSelectionTooltip interval={interval} minWidth={minWidth} rows={rows} />
+    </>
   );
 }
 
@@ -200,20 +204,20 @@ function useReferencesForHoveredPoint(
 }
 
 function useSpikeForHoveredPoint(
-  spikes: OPReferrerSpikeItem[] | null,
+  spikes: OPReferrerSpikeItem[] | null
 ): OPReferrerSpikeItem | null {
   const { tooltipData, data, xAccessor } = useChart();
 
   const nearestIndices = useMemo(
     () =>
       computeNearestIndices(spikes ?? [], data, xAccessor, (s) =>
-        typeof s.date === 'string' ? new Date(s.date) : s.date,
+        typeof s.date === 'string' ? new Date(s.date) : s.date
       ),
-    [spikes, data, xAccessor],
+    [spikes, data, xAccessor]
   );
 
   return useMemo(() => {
-    if (!tooltipData || !spikes || spikes.length === 0) {
+    if (!(tooltipData && spikes) || spikes.length === 0) {
       return null;
     }
     const hoveredIndex = tooltipData.index;
@@ -235,7 +239,7 @@ function computeNearestIndices<T>(
   items: T[],
   data: Record<string, unknown>[],
   xAccessor: (d: Record<string, unknown>) => Date,
-  getDate: (item: T) => Date,
+  getDate: (item: T) => Date
 ): number[] {
   if (items.length === 0 || data.length === 0) {
     return [];
@@ -251,7 +255,9 @@ function computeNearestIndices<T>(
     let minDiff = Number.POSITIVE_INFINITY;
     for (let i = 0; i < dataTimes.length; i++) {
       const t = dataTimes[i]!;
-      if (Number.isNaN(t)) continue;
+      if (Number.isNaN(t)) {
+        continue;
+      }
       const diff = Math.abs(t - target);
       if (diff < minDiff) {
         minDiff = diff;
@@ -273,16 +279,18 @@ function OPAnnotationsBlock({
 }) {
   const visibleRefs = references.slice(0, referencesLimit);
   const hiddenRefs = Math.max(0, references.length - referencesLimit);
-  if (visibleRefs.length === 0 && !spike) return null;
+  if (visibleRefs.length === 0 && !spike) {
+    return null;
+  }
 
   return (
     <div className="col mt-1 gap-2 border-border border-t pt-2">
       {visibleRefs.map((marker) => (
         <OPAnnotationRow
-          key={marker.title}
-          icon={marker.icon}
-          title={marker.title}
           description={marker.description}
+          icon={marker.icon}
+          key={marker.title}
+          title={marker.title}
         />
       ))}
       {hiddenRefs > 0 && (
@@ -318,9 +326,9 @@ function OPSpikeAnnotation({ spike }: { spike: OPReferrerSpikeItem }) {
 
   return (
     <OPAnnotationRow
+      description={description}
       icon={<SerieIcon fill name={spike.referrer_name} />}
       title={`Spike from ${spike.referrer_name}`}
-      description={description}
     />
   );
 }
@@ -436,6 +444,162 @@ function OPTooltipRowView({ row }: { row: OPTooltipRow }) {
             ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function OPSelectionTooltip<T extends Record<string, unknown>>({
+  interval,
+  rows,
+  minWidth,
+}: {
+  interval?: IInterval;
+  rows: (point: T) => OPTooltipRow[];
+  minWidth: number;
+}) {
+  const { selection, data, xAccessor, margin, width, height, containerRef } =
+    useChart();
+  const formatDate = useFormatDateInterval({
+    interval: interval ?? 'day',
+    short: false,
+  });
+
+  if (!selection?.active || data.length === 0) {
+    return null;
+  }
+
+  const startIndex = Math.min(selection.startIndex, selection.endIndex);
+  const endIndex = Math.max(selection.startIndex, selection.endIndex);
+  if (startIndex === endIndex) {
+    return null;
+  }
+
+  const startPoint = data[startIndex] as T | undefined;
+  const endPoint = data[endIndex] as T | undefined;
+  if (!(startPoint && endPoint)) {
+    return null;
+  }
+
+  const selectionRows = createSelectionRows(rows(startPoint), rows(endPoint));
+  if (selectionRows.length === 0) {
+    return null;
+  }
+
+  const centerX =
+    Math.min(selection.startX, selection.endX) +
+    Math.abs(selection.endX - selection.startX) / 2 +
+    margin.left;
+  const title = `${formatDate(xAccessor(startPoint))} → ${formatDate(
+    xAccessor(endPoint)
+  )}`;
+
+  return (
+    <TooltipBox
+      containerHeight={height}
+      containerRef={containerRef}
+      containerWidth={width}
+      top={margin.top}
+      visible
+      x={centerX}
+      y={margin.top}
+    >
+      <OPTooltipCard style={{ minWidth }}>
+        <div className="flex justify-between gap-8 text-muted-foreground">
+          <div>{title}</div>
+        </div>
+        {selectionRows.map((row, index) => (
+          <OPSelectionTooltipRowView key={`${row.label}-${index}`} row={row} />
+        ))}
+      </OPTooltipCard>
+    </TooltipBox>
+  );
+}
+
+interface OPSelectionTooltipRow {
+  color: string;
+  label: ReactNode;
+  startValue: number;
+  endValue: number;
+  unit?: OPTooltipUnit;
+  inverted?: boolean;
+  diff: OPSelectionDiff;
+}
+
+interface OPSelectionDiff {
+  diff: number | null;
+  state: 'positive' | 'negative' | 'neutral';
+}
+
+function createSelectionRows(
+  startRows: OPTooltipRow[],
+  endRows: OPTooltipRow[]
+): OPSelectionTooltipRow[] {
+  return endRows.flatMap((endRow, index) => {
+    const startRow = startRows[index];
+    if (!startRow) {
+      return [];
+    }
+    if (
+      typeof startRow.value !== 'number' ||
+      typeof endRow.value !== 'number'
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        color: endRow.color,
+        label: endRow.label,
+        startValue: startRow.value,
+        endValue: endRow.value,
+        unit: endRow.unit,
+        inverted: endRow.inverted,
+        diff: getSelectionDiff(startRow.value, endRow.value),
+      },
+    ];
+  });
+}
+
+function getSelectionDiff(
+  startValue: number,
+  endValue: number
+): OPSelectionDiff {
+  if (startValue === endValue) {
+    return { diff: null, state: 'neutral' as const };
+  }
+
+  const state: OPSelectionDiff['state'] =
+    endValue > startValue ? 'positive' : 'negative';
+  if (startValue === 0) {
+    return { diff: null, state };
+  }
+
+  return {
+    diff:
+      Math.round(Math.abs(((endValue - startValue) / startValue) * 1000)) / 10,
+    state,
+  };
+}
+
+function OPSelectionTooltipRowView({ row }: { row: OPSelectionTooltipRow }) {
+  const number = useNumber();
+
+  return (
+    <div className="flex gap-2">
+      <div className="w-[3px] rounded-full" style={{ background: row.color }} />
+      <div className="col min-w-0 flex-1 gap-1">
+        <div className="flex min-w-0 items-center gap-1">
+          <span className="truncate font-medium">{row.label}</span>
+        </div>
+        <div className="flex items-center justify-between gap-8 font-medium font-mono">
+          <div className="row items-baseline gap-1">
+            <span>{formatOPValue(row.startValue, row.unit, number)}</span>
+            <span className="text-muted-foreground">→</span>
+            <span>{formatOPValue(row.endValue, row.unit, number)}</span>
+          </div>
+          <PreviousDiffIndicatorPure {...row.diff} inverted={row.inverted} />
+        </div>
       </div>
     </div>
   );
