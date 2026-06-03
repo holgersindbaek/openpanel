@@ -80,6 +80,19 @@ ClickHouse HTTP connection URL for analytics data storage.
 CLICKHOUSE_URL=http://localhost:8123/openpanel
 ```
 
+### CLICKHOUSE_QUERY_REQUEST_TIMEOUT_MS
+
+**Type**: `number`
+**Required**: No
+**Default**: `300000`
+
+ClickHouse HTTP timeout for analytics read queries, in milliseconds. Increase this for high-volume self-hosted installs where large reports need more time to finish.
+
+**Example**:
+```bash
+CLICKHOUSE_QUERY_REQUEST_TIMEOUT_MS=300000
+```
+
 ### CLICKHOUSE_CLUSTER
 
 **Type**: `boolean`  
@@ -1155,4 +1168,3 @@ For a basic self-hosted installation, these variables are required:
 - [Deploy with Coolify](/docs/self-hosting/deploy-coolify)
 - [Deploy with Dokploy](/docs/self-hosting/deploy-dokploy)
 - [Deploy on Kubernetes](/docs/self-hosting/deploy-kubernetes)
-

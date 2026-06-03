@@ -121,6 +121,14 @@ function getClickhouseSettings(): ClickHouseSettings {
   };
 }
 
+const defaultClickhouseSettings = getClickhouseSettings();
+const queryClickhouseSettings: ClickHouseSettings = {
+  send_progress_in_http_headers: 1,
+  http_headers_progress_interval_ms: '50000',
+  wait_end_of_query: 1,
+  ...defaultClickhouseSettings,
+};
+
 // Request gzip is on by default — pays CPU on the worker to send less data
 // over the wire. For payload-heavy buffers (replay) the gzip step happens on
 // the single Node main thread and can block the event loop, so it's worth
@@ -152,6 +160,16 @@ const requestTimeoutMs = process.env.CLICKHOUSE_REQUEST_TIMEOUT_MS
     )
   : 30_000;
 
+// Read-heavy analytics queries can legitimately run longer than inserts on
+// high-volume self-hosted installs. Keep the general client short for failover,
+// but give SELECT queries enough time to finish unless explicitly overridden.
+const queryRequestTimeoutMs = process.env.CLICKHOUSE_QUERY_REQUEST_TIMEOUT_MS
+  ? Math.max(
+      1000,
+      Number.parseInt(process.env.CLICKHOUSE_QUERY_REQUEST_TIMEOUT_MS, 10)
+    )
+  : Math.max(requestTimeoutMs, 300_000);
+
 // How long to skip a node after a connection failure, before trying it
 // again. Short by default — we want fast recovery once a node comes back.
 const unhealthyMarkMs = process.env.CLICKHOUSE_UNHEALTHY_MARK_MS
@@ -170,7 +188,7 @@ export const CLICKHOUSE_OPTIONS: NodeClickHouseClientConfigOptions = {
   compression: {
     request: requestCompressionEnabled,
   },
-  clickhouse_settings: getClickhouseSettings(),
+  clickhouse_settings: defaultClickhouseSettings,
   log: {
     LoggerClass: CustomLogger,
     level: ClickHouseLogLevel.DEBUG,
@@ -201,14 +219,31 @@ const rawClickhouseUrls = (process.env.CLICKHOUSE_URL ?? '')
 
 const clickhouseUrls = rawClickhouseUrls.length > 0 ? rawClickhouseUrls : [''];
 
-const clients: ClickHouseClient[] = clickhouseUrls.map((url) =>
-  createClient({
-    url: url || process.env.CLICKHOUSE_URL,
-    ...CLICKHOUSE_OPTIONS,
-  })
+const createClickhouseClients = (
+  timeoutMs: number,
+  clickhouseSettings = defaultClickhouseSettings
+): ClickHouseClient[] =>
+  clickhouseUrls.map((url) =>
+    createClient({
+      url: url || process.env.CLICKHOUSE_URL,
+      ...CLICKHOUSE_OPTIONS,
+      request_timeout: timeoutMs,
+      clickhouse_settings: clickhouseSettings,
+    })
+  );
+
+const clients = createClickhouseClients(requestTimeoutMs);
+const queryClients = createClickhouseClients(
+  queryRequestTimeoutMs,
+  queryClickhouseSettings
 );
 
 const picker = new RoundRobinPicker(clients, clickhouseUrls, unhealthyMarkMs);
+const queryPicker = new RoundRobinPicker(
+  queryClients,
+  clickhouseUrls,
+  unhealthyMarkMs
+);
 
 function maskUrlCredentials(url: string): string {
   if (!url) {
@@ -235,6 +270,7 @@ logger.info(
     nodeCount: clients.length,
     urls: clickhouseUrls.map(maskUrlCredentials),
     requestTimeoutMs,
+    queryRequestTimeoutMs,
     unhealthyMarkMs,
     options: { ...CLICKHOUSE_OPTIONS, log: undefined },
   },
@@ -266,6 +302,15 @@ export async function withRetry<T>(
   ) => Promise<T>
 ): Promise<T> {
   return withRoundRobinRetry(picker, operation, logger);
+}
+
+async function withQueryRetry<T>(
+  operation: (
+    client: ClickHouseClient,
+    ctx: { url: string; index: number }
+  ) => Promise<T>
+): Promise<T> {
+  return withRoundRobinRetry(queryPicker, operation, logger);
 }
 
 /** Best-effort URL → hostname extraction for log labels. */
@@ -334,7 +379,7 @@ export async function chQueryWithMeta<T extends Record<string, any>>(
 ): Promise<ResponseJSON<T>> {
   const start = Date.now();
   let host: string | undefined;
-  const res = await withRetry((client, ctx) => {
+  const res = await withQueryRetry((client, ctx) => {
     host = urlHostname(ctx.url);
     return client.query({
       query,
