@@ -2,7 +2,10 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { AspectContainer } from '../aspect-container';
 import { ReportChartEmpty } from '../common/empty';
 import { ReportChartError } from '../common/error';
-import { ReportChartLoading } from '../common/loading';
+import {
+  ReportChartLoading,
+  type ReportChartLoadingState,
+} from '../common/loading';
 import {
   useChartInput,
   useReleaseReportQueryQueue,
@@ -43,7 +46,11 @@ export function ReportAreaChart() {
     res.isLoading ||
     (res.isFetching && !res.data?.series.length)
   ) {
-    return <Loading />;
+    return (
+      <Loading
+        state={isLazyLoading || reportQuery.isQueued ? 'queued' : 'fetching'}
+      />
+    );
   }
 
   if (res.isError) {
@@ -61,10 +68,10 @@ export function ReportAreaChart() {
   );
 }
 
-function Loading() {
+function Loading({ state }: { state: ReportChartLoadingState }) {
   return (
     <AspectContainer>
-      <ReportChartLoading />
+      <ReportChartLoading state={state} />
     </AspectContainer>
   );
 }

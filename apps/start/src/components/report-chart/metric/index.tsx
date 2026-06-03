@@ -3,6 +3,10 @@ import { AspectContainer } from '../aspect-container';
 import { ReportChartEmpty } from '../common/empty';
 import { ReportChartError } from '../common/error';
 import {
+  ReportChartLoading,
+  type ReportChartLoadingState,
+} from '../common/loading';
+import {
   useChartInput,
   useReleaseReportQueryQueue,
   useReportChartContext,
@@ -42,7 +46,11 @@ export function ReportMetricChart() {
     res.isLoading ||
     (res.isFetching && !res.data?.series.length)
   ) {
-    return <Loading />;
+    return (
+      <Loading
+        state={isLazyLoading || reportQuery.isQueued ? 'queued' : 'fetching'}
+      />
+    );
   }
 
   if (res.isError) {
@@ -56,14 +64,10 @@ export function ReportMetricChart() {
   return <Chart data={res.data} />;
 }
 
-export function Loading() {
+export function Loading({ state }: { state: ReportChartLoadingState }) {
   return (
-    <div className="flex h-[78px] flex-col justify-between p-4">
-      <div className="h-3 w-1/2 animate-pulse rounded bg-def-200" />
-      <div className="row items-end justify-between">
-        <div className="h-6 w-1/3 animate-pulse rounded bg-def-200" />
-        <div className="h-3 w-1/5 animate-pulse rounded bg-def-200" />
-      </div>
+    <div className="h-[78px] w-full">
+      <ReportChartLoading state={state} />
     </div>
   );
 }

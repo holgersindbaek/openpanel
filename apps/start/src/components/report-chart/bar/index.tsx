@@ -3,6 +3,10 @@ import { AspectContainer } from '../aspect-container';
 import { ReportChartEmpty } from '../common/empty';
 import { ReportChartError } from '../common/error';
 import {
+  ReportChartLoading,
+  type ReportChartLoadingState,
+} from '../common/loading';
+import {
   useChartInput,
   useReleaseReportQueryQueue,
   useReportChartContext,
@@ -10,7 +14,6 @@ import {
 } from '../context';
 import { Chart } from './chart';
 import { useTRPC } from '@/integrations/trpc/react';
-import { cn } from '@/utils/cn';
 
 export function ReportBarChart() {
   const { isLazyLoading, shareId } = useReportChartContext();
@@ -43,7 +46,11 @@ export function ReportBarChart() {
     res.isLoading ||
     (res.isFetching && !res.data?.series.length)
   ) {
-    return <Loading />;
+    return (
+      <Loading
+        state={isLazyLoading || reportQuery.isQueued ? 'queued' : 'fetching'}
+      />
+    );
   }
   if (res.isError) {
     return <Error />;
@@ -56,63 +63,11 @@ export function ReportBarChart() {
   return <Chart data={res.data} />;
 }
 
-function Loading() {
-  const { isEditMode } = useReportChartContext();
+function Loading({ state }: { state: ReportChartLoadingState }) {
   return (
-    <div className={cn('w-full', isEditMode && 'card')}>
-      <div className="overflow-hidden">
-        <div className="divide-y divide-def-200 dark:divide-def-800">
-          {Array.from({ length: 10 }).map((_, index) => (
-            <div
-              className="relative animate-pulse px-4 py-3"
-              key={index as number}
-            >
-              <div className="relative z-10 flex flex-col gap-2">
-                <div className="flex items-center justify-between gap-4">
-                  <div className="flex min-w-0 items-center gap-3">
-                    {/* Icon skeleton */}
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border bg-def-100 dark:border-def-800 dark:bg-def-900" />
-
-                    <div className="min-w-0">
-                      {/* Rank badge skeleton */}
-                      <div className="mb-1 flex items-center gap-2">
-                        <div className="h-2 w-2 rounded-full bg-def-200 dark:bg-def-700" />
-                        <div className="h-2 w-12 rounded bg-def-200 dark:bg-def-700" />
-                      </div>
-
-                      {/* Name skeleton */}
-                      <div
-                        className="h-4 rounded bg-def-200 dark:bg-def-700"
-                        style={{
-                          width: `${Math.random() * 100 + 100}px`,
-                        }}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Count skeleton */}
-                  <div className="flex shrink-0 flex-col items-end gap-1">
-                    <div className="h-5 w-16 rounded bg-def-200 dark:bg-def-700" />
-                  </div>
-                </div>
-
-                {/* Bar skeleton */}
-                <div className="flex items-center">
-                  <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-def-100 dark:bg-def-900">
-                    <div
-                      className="h-full rounded-full bg-def-200 dark:bg-def-700"
-                      style={{
-                        width: `${Math.random() * 60 + 20}%`,
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
+    <AspectContainer>
+      <ReportChartLoading state={state} />
+    </AspectContainer>
   );
 }
 

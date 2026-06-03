@@ -1,86 +1,61 @@
-import { cn } from '@/utils/cn';
-import { AnimatePresence, motion } from 'framer-motion';
-import {
-  ActivityIcon,
-  AlarmClockIcon,
-  BarChart2Icon,
-  BarChartIcon,
-  ChartLineIcon,
-  ChartPieIcon,
-  LineChartIcon,
-  MessagesSquareIcon,
-  PieChartIcon,
-  TrendingUpIcon,
-} from 'lucide-react';
-import React, { useEffect, useState } from 'react';
+import { Loader2Icon } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { useReportChartContext } from '../context';
+import { cn } from '@/utils/cn';
 
-const icons = [
-  { Icon: ActivityIcon, color: 'text-chart-6' },
-  { Icon: BarChart2Icon, color: 'text-chart-9' },
-  { Icon: ChartLineIcon, color: 'text-chart-0' },
-  { Icon: AlarmClockIcon, color: 'text-chart-1' },
-  { Icon: ChartPieIcon, color: 'text-chart-2' },
-  { Icon: MessagesSquareIcon, color: 'text-chart-3' },
-  { Icon: BarChartIcon, color: 'text-chart-4' },
-  { Icon: TrendingUpIcon, color: 'text-chart-5' },
-  { Icon: PieChartIcon, color: 'text-chart-7' },
-  { Icon: LineChartIcon, color: 'text-chart-8' },
-];
+export type ReportChartLoadingState = 'queued' | 'fetching';
 
-export function ReportChartLoading({ things }: { things?: boolean }) {
-  const { isEditMode } = useReportChartContext();
-  const [currentIconIndex, setCurrentIconIndex] = React.useState(0);
-  const [isSlow, setSlow] = useState(false);
-
-  React.useEffect(() => {
-    const interval = setInterval(() => {
-      setCurrentIconIndex((prevIndex) => (prevIndex + 1) % icons.length);
-    }, 1500);
-
-    return () => clearInterval(interval);
-  }, []);
+function useElapsedSeconds(enabled: boolean) {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   useEffect(() => {
-    if (currentIconIndex >= 3) {
-      setSlow(true);
+    if (!enabled) {
+      setElapsedSeconds(0);
+      return;
     }
-  }, [currentIconIndex]);
 
-  const { Icon, color } = icons[currentIconIndex]!;
+    const startedAt = Date.now();
+    const update = () => {
+      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    };
+    const intervalId = window.setInterval(update, 1000);
+    update();
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [enabled]);
+
+  return elapsedSeconds;
+}
+
+export function ReportChartLoading({
+  state = 'fetching',
+}: {
+  state?: ReportChartLoadingState;
+}) {
+  const { isEditMode } = useReportChartContext();
+  const elapsedSeconds = useElapsedSeconds(state === 'fetching');
+  const label =
+    state === 'queued' ? 'Queued...' : `Fetching (${elapsedSeconds}s)`;
 
   return (
     <div className={cn('h-full w-full', isEditMode && 'card p-4')}>
       <div
         className={
-          'relative h-full w-full rounded bg-def-100 overflow-hidden center-center flex'
+          'center-center relative flex h-full w-full overflow-hidden rounded bg-def-100'
         }
       >
-        <AnimatePresence initial={false} mode="wait">
-          <motion.div
-            key={currentIconIndex}
-            initial={{ x: '100%', opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            exit={{ x: '-100%', opacity: 0 }}
-            transition={{
-              type: 'spring',
-              stiffness: 500,
-              damping: 30,
-              duration: 0.5,
-            }}
-            className={cn('absolute size-1/3', color)}
-          >
-            <Icon className="w-full h-full" />
-          </motion.div>
-        </AnimatePresence>
-
         <div
           className={cn(
-            'absolute top-3/4 opacity-0 transition-opacity text-muted-foreground',
-            isSlow && 'opacity-100',
+            'row items-center gap-2 font-medium text-muted-foreground text-sm',
+            state === 'fetching' && 'text-foreground'
           )}
         >
-          Stay calm, its coming 🙄
+          <Loader2Icon
+            className={cn('size-4', state === 'fetching' && 'animate-spin')}
+          />
+          <span>{label}</span>
         </div>
       </div>
     </div>
