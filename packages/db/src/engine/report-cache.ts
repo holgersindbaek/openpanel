@@ -7,6 +7,8 @@ import {
   getReportCacheEntries,
   getReportCacheIneligibilityReason,
   getReportCacheKey,
+  getReportCacheRuntimeIneligibilityReason,
+  getReportCacheWriteSkipReason,
   isCacheableReportInterval,
   setReportCacheEntries,
 } from '../services/report-cache.service';
@@ -227,6 +229,51 @@ export async function fetchWithReportCache(
     );
   }
 
+  try {
+    const runtimeIneligibilityReason =
+      await getReportCacheRuntimeIneligibilityReason(plan.input, {
+        abortSignal: options?.abortSignal,
+      });
+    if (runtimeIneligibilityReason) {
+      logReportDebug(logger, 'cache.ineligible', options?.debugContext, {
+        reason: runtimeIneligibilityReason,
+      });
+      return fetchRange(
+        plan,
+        {
+          startDate: plan.input.startDate,
+          endDate: plan.input.endDate,
+        },
+        options,
+        'ineligible'
+      );
+    }
+  } catch (error) {
+    logger.warn(
+      { err: error, projectId: plan.input.projectId },
+      'Report cache runtime eligibility check failed; falling back to raw query'
+    );
+    logReportDebug(
+      logger,
+      'cache.ineligible',
+      options?.debugContext,
+      {
+        reason: 'runtime-check-error',
+        err: error,
+      },
+      'warn'
+    );
+    return fetchRange(
+      plan,
+      {
+        startDate: plan.input.startDate,
+        endDate: plan.input.endDate,
+      },
+      options,
+      'ineligible'
+    );
+  }
+
   if (!isCacheableReportInterval(plan.input.interval)) {
     logReportDebug(logger, 'cache.ineligible', options?.debugContext, {
       reason: 'interval',
@@ -341,17 +388,29 @@ export async function fetchWithReportCache(
     if (!options?.abortSignal?.aborted) {
       try {
         const writeStartedAt = Date.now();
+        const entries = splitSeriesIntoBucketPayloads({
+          series: fetched,
+          buckets: group,
+          interval: plan.input.interval,
+          timezone: plan.timezone,
+        });
+        const skip = getReportCacheWriteSkipReason({ entries });
+        if (skip) {
+          logReportDebug(logger, 'cache.write.skipped', options?.debugContext, {
+            reason: skip.reason,
+            bucketId: skip.bucketId,
+            actual: skip.actual,
+            limit: skip.limit,
+          });
+          continue;
+        }
+
         await setReportCacheEntries({
           projectId: plan.input.projectId,
           cacheKey,
           timezone: plan.timezone,
           interval: plan.input.interval,
-          entries: splitSeriesIntoBucketPayloads({
-            series: fetched,
-            buckets: group,
-            interval: plan.input.interval,
-            timezone: plan.timezone,
-          }),
+          entries,
         });
         logReportDebug(logger, 'cache.write.done', options?.debugContext, {
           elapsedMs: Date.now() - writeStartedAt,

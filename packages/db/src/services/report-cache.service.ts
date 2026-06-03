@@ -18,6 +18,24 @@ const logger = createLogger({ name: 'report-cache' });
 
 export const REPORT_CACHE_VERSION = 1;
 
+function readPositiveIntEnv(name: string, fallback: number) {
+  const value = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+export const REPORT_CACHE_BREAKDOWN_VALUE_LIMIT = readPositiveIntEnv(
+  'REPORT_CACHE_BREAKDOWN_VALUE_LIMIT',
+  200
+);
+export const REPORT_CACHE_MAX_BUCKET_SERIES = readPositiveIntEnv(
+  'REPORT_CACHE_MAX_BUCKET_SERIES',
+  250
+);
+export const REPORT_CACHE_MAX_BUCKET_PAYLOAD_BYTES = readPositiveIntEnv(
+  'REPORT_CACHE_MAX_BUCKET_PAYLOAD_BYTES',
+  1_000_000
+);
+
 const CACHEABLE_INTERVALS = new Set<string>(['day', 'week', 'month']);
 const CACHEABLE_SEGMENTS = new Set<string>([
   'event',
@@ -57,6 +75,36 @@ function hasDynamicFilter(filters: IChartEventFilter[]) {
   });
 }
 
+function getEventDefinitions(input: IReportInputWithDates) {
+  return input.series.filter(
+    (item): item is IChartEventItem & { type: 'event' } => item.type === 'event'
+  );
+}
+
+export function getReportCacheBreakdownIneligibilityReason(
+  input: IReportInputWithDates
+): string | null {
+  if (input.breakdowns.length === 0) {
+    return null;
+  }
+
+  if (input.breakdowns.length > 1) {
+    return 'breakdowns:multiple';
+  }
+
+  const breakdownName = input.breakdowns[0]?.name;
+  if (!breakdownName?.startsWith('properties.')) {
+    return 'breakdowns:field';
+  }
+
+  const propertyKey = breakdownName.replace(/^properties\./, '');
+  if (!(propertyKey && !propertyKey.includes('*'))) {
+    return 'breakdowns:wildcard';
+  }
+
+  return null;
+}
+
 export function getReportCacheIneligibilityReason(
   input: IReportInputWithDates
 ): string | null {
@@ -68,20 +116,16 @@ export function getReportCacheIneligibilityReason(
     return 'total-count';
   }
 
-  if (input.breakdowns.length > 0) {
-    return 'breakdowns';
+  const breakdownReason = getReportCacheBreakdownIneligibilityReason(input);
+  if (breakdownReason) {
+    return breakdownReason;
   }
 
-  if (input.limit || input.offset) {
+  if (input.offset) {
     return 'pagination';
   }
 
-  for (const item of input.series) {
-    if (item.type === 'formula') {
-      continue;
-    }
-
-    const event = item as IChartEventItem & { type: 'event' };
+  for (const event of getEventDefinitions(input)) {
     if (!CACHEABLE_SEGMENTS.has(event.segment)) {
       return `segment:${event.segment}`;
     }
@@ -98,6 +142,90 @@ export function getReportCacheIneligibilityReason(
         event.property.startsWith('cohort:'))
     ) {
       return 'dynamic-property';
+    }
+  }
+
+  return null;
+}
+
+export async function getReportCacheRuntimeIneligibilityReason(
+  input: IReportInputWithDates,
+  options?: { abortSignal?: AbortSignal }
+): Promise<string | null> {
+  if (input.breakdowns.length === 0) {
+    return null;
+  }
+
+  const breakdownName = input.breakdowns[0]?.name;
+  if (!breakdownName) {
+    return 'breakdowns:missing';
+  }
+
+  const propertyKey = breakdownName.replace(/^properties\./, '');
+  const eventNames = [
+    ...new Set(
+      getEventDefinitions(input)
+        .map((event) => event.name)
+        .filter((name) => name && name !== '*')
+    ),
+  ];
+  const limit = Math.max(1, REPORT_CACHE_BREAKDOWN_VALUE_LIMIT);
+  const rows = await chQuery<{ value_count: number }>(
+    `SELECT count() AS value_count
+    FROM (
+      SELECT property_value
+      FROM ${TABLE_NAMES.event_property_values_mv}
+      WHERE project_id = ${sqlstring.escape(input.projectId)}
+        AND property_key = ${sqlstring.escape(propertyKey)}
+        ${
+          eventNames.length > 0
+            ? `AND name IN (${eventNames.map((name) => sqlstring.escape(name)).join(',')})`
+            : ''
+        }
+      GROUP BY property_value
+      LIMIT ${limit + 1}
+    )`,
+    undefined,
+    options?.abortSignal ? { abortSignal: options.abortSignal } : undefined
+  );
+  const valueCount = Number(rows[0]?.value_count ?? 0);
+
+  if (valueCount > limit) {
+    return `breakdowns:cardinality:${valueCount}`;
+  }
+
+  return null;
+}
+
+export function getReportCacheWriteSkipReason<TPayload>({
+  entries,
+}: {
+  entries: ReportCacheEntry<TPayload>[];
+}): {
+  reason: 'max-series' | 'max-payload';
+  bucketId: string;
+  actual: number;
+  limit: number;
+} | null {
+  for (const entry of entries) {
+    const seriesCount = Array.isArray(entry.payload) ? entry.payload.length : 0;
+    if (seriesCount > REPORT_CACHE_MAX_BUCKET_SERIES) {
+      return {
+        reason: 'max-series',
+        bucketId: entry.bucketId,
+        actual: seriesCount,
+        limit: REPORT_CACHE_MAX_BUCKET_SERIES,
+      };
+    }
+
+    const payloadBytes = Buffer.byteLength(JSON.stringify(entry.payload));
+    if (payloadBytes > REPORT_CACHE_MAX_BUCKET_PAYLOAD_BYTES) {
+      return {
+        reason: 'max-payload',
+        bucketId: entry.bucketId,
+        actual: payloadBytes,
+        limit: REPORT_CACHE_MAX_BUCKET_PAYLOAD_BYTES,
+      };
     }
   }
 

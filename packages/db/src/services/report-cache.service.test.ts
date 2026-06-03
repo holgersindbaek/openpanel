@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   getReportCacheIneligibilityReason,
   getReportCacheKey,
+  getReportCacheWriteSkipReason,
+  REPORT_CACHE_MAX_BUCKET_SERIES,
   stableStringify,
 } from './report-cache.service';
 
@@ -69,6 +71,27 @@ describe('report-cache.service', () => {
     expect(getReportCacheIneligibilityReason(baseInput)).toBeNull();
   });
 
+  it('allows low-risk event property breakdown shapes', () => {
+    expect(
+      getReportCacheIneligibilityReason({
+        ...baseInput,
+        breakdowns: [
+          {
+            id: 'viewport_bucket',
+            name: 'properties.viewport_bucket',
+          },
+        ],
+      })
+    ).toBeNull();
+
+    expect(
+      getReportCacheIneligibilityReason({
+        ...baseInput,
+        limit: 10,
+      })
+    ).toBeNull();
+  });
+
   it('rejects dynamic report shapes', () => {
     expect(
       getReportCacheIneligibilityReason({
@@ -82,7 +105,38 @@ describe('report-cache.service', () => {
         ...baseInput,
         breakdowns: [{ id: 'country', name: 'country' }],
       })
-    ).toBe('breakdowns');
+    ).toBe('breakdowns:field');
+
+    expect(
+      getReportCacheIneligibilityReason({
+        ...baseInput,
+        breakdowns: [
+          { id: 'a', name: 'properties.a' },
+          { id: 'b', name: 'properties.b' },
+        ],
+      })
+    ).toBe('breakdowns:multiple');
+
+    expect(
+      getReportCacheIneligibilityReason({
+        ...baseInput,
+        breakdowns: [{ id: 'profile-plan', name: 'profile.properties.plan' }],
+      })
+    ).toBe('breakdowns:field');
+
+    expect(
+      getReportCacheIneligibilityReason({
+        ...baseInput,
+        breakdowns: [{ id: 'array', name: 'properties.items.*.name' }],
+      })
+    ).toBe('breakdowns:wildcard');
+
+    expect(
+      getReportCacheIneligibilityReason({
+        ...baseInput,
+        offset: 10,
+      })
+    ).toBe('pagination');
 
     expect(
       getReportCacheIneligibilityReason({
@@ -120,5 +174,28 @@ describe('report-cache.service', () => {
         ],
       })
     ).toBe('dynamic-filter');
+  });
+
+  it('skips cache writes when a bucket expands to too many series', () => {
+    const skip = getReportCacheWriteSkipReason({
+      entries: [
+        {
+          bucketId: 'day:2026-01-01',
+          bucketStart: '2026-01-01 00:00:00',
+          bucketEnd: '2026-01-01 23:59:59',
+          payload: Array.from(
+            { length: REPORT_CACHE_MAX_BUCKET_SERIES + 1 },
+            (_, index) => ({ id: `series-${index}` })
+          ),
+        },
+      ],
+    });
+
+    expect(skip).toEqual({
+      reason: 'max-series',
+      bucketId: 'day:2026-01-01',
+      actual: REPORT_CACHE_MAX_BUCKET_SERIES + 1,
+      limit: REPORT_CACHE_MAX_BUCKET_SERIES,
+    });
   });
 });
