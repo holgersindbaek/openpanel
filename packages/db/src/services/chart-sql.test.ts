@@ -325,6 +325,30 @@ describe('chart.service / getChartSql', () => {
     expect(sql).not.toMatch(/tupleElement\(first_event,\s+\d+\)\s+AS\s+path/);
   });
 
+  it('first_seen total count uses the same project-scoped first-seen source', async () => {
+    const sql = await getChartSql({
+      event: event({ name: 'Pageview', segment: 'first_seen' }),
+      breakdowns: [],
+      interval: 'day',
+      startDate: START,
+      endDate: END,
+      projectId: PROJECT_ID,
+      timezone: 'UTC',
+      includeTotalCount: true,
+    });
+    const normalizedSql = sql.replace(/\s+/g, ' ');
+    const projectScopeMatches =
+      sql.match(new RegExp(`WHERE project_id = '${PROJECT_ID}'`, 'g')) ?? [];
+
+    expect(projectScopeMatches.length).toBeGreaterThanOrEqual(2);
+    expect(normalizedSql).toContain(
+      '_uc AS (SELECT uniq(profile_id) as total_count FROM ('
+    );
+    expect(normalizedSql).not.toContain(
+      '_uc AS (SELECT uniq(profile_id) as total_count FROM events e'
+    );
+  });
+
   // Regressions from HyperDX 2026-05-14 → 2026-05-17 ClickHouse error log.
   // Saved reports / older clients send field names that don't match the events
   // schema; the chart service used to inline them verbatim, crashing parse.

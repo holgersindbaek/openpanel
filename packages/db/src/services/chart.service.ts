@@ -891,6 +891,8 @@ export async function getChartSql({
   const inlineAllCohortsJoin = hasAllCohortsBreakdown
     ? `INNER JOIN (${buildAllCohortsMembershipQuery(projectId)}) AS _all_cohorts ON _all_cohorts.profile_id = e.profile_id `
     : '';
+  const uniqueCountFrom =
+    event.segment === 'first_seen' ? sb.from : `${TABLE_NAMES.events} e`;
 
   if (includeTotalCount) {
     if (breakdowns.length > 0) {
@@ -924,7 +926,7 @@ export async function getChartSql({
 
       addCte(
         '_uc',
-        `SELECT ${ucSelectParts.join(', ')} FROM ${TABLE_NAMES.events} e ${subqueryGroupJoins}${profilesJoinRef ? `${profilesJoinRef} ` : ''}${inlineCohortJoinsSql ? `${inlineCohortJoinsSql} ` : ''}${inlineAllCohortsJoin}${ucWhere} GROUP BY ${ucGroupByParts.join(', ')}`
+        `SELECT ${ucSelectParts.join(', ')} FROM ${uniqueCountFrom} ${subqueryGroupJoins}${profilesJoinRef ? `${profilesJoinRef} ` : ''}${inlineCohortJoinsSql ? `${inlineCohortJoinsSql} ` : ''}${inlineAllCohortsJoin}${ucWhere} GROUP BY ${ucGroupByParts.join(', ')}`
       );
 
       const ucJoinConditions = breakdowns
@@ -952,7 +954,7 @@ export async function getChartSql({
 
       addCte(
         '_uc',
-        `SELECT uniq(profile_id) as total_count FROM ${TABLE_NAMES.events} e ${subqueryGroupJoins}${profilesJoinRef ? `${profilesJoinRef} ` : ''}${inlineCohortJoinsSql ? `${inlineCohortJoinsSql} ` : ''}${ucWhere}`
+        `SELECT uniq(profile_id) as total_count FROM ${uniqueCountFrom} ${subqueryGroupJoins}${profilesJoinRef ? `${profilesJoinRef} ` : ''}${inlineCohortJoinsSql ? `${inlineCohortJoinsSql} ` : ''}${ucWhere}`
       );
 
       sb.select.total_unique_count =
