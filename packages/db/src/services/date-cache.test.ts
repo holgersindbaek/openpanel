@@ -1,17 +1,36 @@
 import { DateTime } from '@openpanel/common';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   getClosedReportCacheBuckets,
+  getDatesFromRange,
   getFullDayDateRange,
   getStrictReportCacheBoundary,
   isUtcTimezone,
 } from './date.service';
 
 describe('report cache date helpers', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('recognizes the UTC timezones that are compatible with UTC rollups', () => {
     expect(isUtcTimezone('UTC')).toBe(true);
     expect(isUtcTimezone('Etc/UTC')).toBe(true);
     expect(isUtcTimezone('Europe/Copenhagen')).toBe(false);
+  });
+
+  it('resolves 60d to a wider range than 30d', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-03T10:00:00.000Z'));
+
+    expect(getDatesFromRange('30d', 'UTC')).toEqual({
+      startDate: '2026-05-04 00:00:00',
+      endDate: '2026-06-04 00:00:00',
+    });
+    expect(getDatesFromRange('60d', 'UTC')).toEqual({
+      startDate: '2026-04-04 00:00:00',
+      endDate: '2026-06-04 00:00:00',
+    });
   });
 
   it('uses the stricter previous-day boundary after the 48 hour cutoff', () => {
