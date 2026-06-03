@@ -205,6 +205,7 @@ export const useReportQueryQueue = (
     () => stringifyReportQueryKey(queryKey),
     [queryKey]
   );
+  const [releasedQueryKey, setReleasedQueryKey] = useState<string | null>(null);
   const activeId = useSyncExternalStore(
     reportQueryQueue.subscribe,
     reportQueryQueue.getSnapshot,
@@ -226,12 +227,13 @@ export const useReportQueryQueue = (
   }, [enabled, id, priority, stableQueryKey]);
 
   const release = useCallback(() => {
+    setReleasedQueryKey(stableQueryKey);
     reportQueryQueue.release(id);
-  }, [id]);
+  }, [id, stableQueryKey]);
 
   return {
     enabled: enabled && hasSlot,
-    isQueued: enabled && !hasSlot,
+    isQueued: enabled && releasedQueryKey !== stableQueryKey && !hasSlot,
     release,
   };
 };
