@@ -2,7 +2,7 @@ import { NOT_SET_VALUE } from '@openpanel/constants';
 import type { IReportInput } from '@openpanel/validation';
 import { omit } from 'ramda';
 import sqlstring from 'sqlstring';
-import { TABLE_NAMES, ch } from '../clickhouse/client';
+import { ch, TABLE_NAMES } from '../clickhouse/client';
 import { clix } from '../clickhouse/query-builder';
 import {
   buildInlineCohortJoin,
@@ -28,8 +28,10 @@ export class ConversionService {
     limit,
     interval,
     timezone,
+    abortSignal,
   }: Omit<IReportInput, 'range' | 'previous' | 'metric' | 'chartType'> & {
     timezone: string;
+    abortSignal?: AbortSignal;
   }) {
     const funnelOptions = options?.type === 'funnel' ? options : undefined;
     const funnelGroup = funnelOptions?.funnelGroup;
@@ -52,13 +54,13 @@ export class ConversionService {
       return getSelectPropertyKey(b.name, projectId, bId ?? undefined, bName);
     });
     const breakdownSelects = breakdownExpressions.map(
-      (expr, index) => `${expr} as b_${index}`,
+      (expr, index) => `${expr} as b_${index}`
     );
     const breakdownGroupBy = breakdowns.map((_, index) => `b_${index}`);
 
     // Check if any breakdown or filter uses profile fields
     const profileBreakdowns = breakdowns.filter((b) =>
-      b.name.startsWith('profile.'),
+      b.name.startsWith('profile.')
     );
     const needsProfileJoin = profileBreakdowns.length > 0;
 
@@ -99,10 +101,10 @@ export class ConversionService {
 
     // Check if any breakdown or filter uses group fields
     const anyBreakdownOnGroup = breakdowns.some((b) =>
-      b.name.startsWith('group.'),
+      b.name.startsWith('group.')
     );
     const anyFilterOnGroup = events.some((e) =>
-      e.filters?.some((f) => f.name.startsWith('group.')),
+      e.filters?.some((f) => f.name.startsWith('group.'))
     );
     const needsGroupArrayJoin = anyBreakdownOnGroup || anyFilterOnGroup;
 
@@ -110,17 +112,17 @@ export class ConversionService {
       throw new Error('events must be an array of two events');
     }
 
-    if (!startDate || !endDate) {
+    if (!(startDate && endDate)) {
       throw new Error('startDate and endDate are required');
     }
 
     const eventA = events[0]!;
     const eventB = events[1]!;
     const whereA = Object.values(
-      getEventFiltersWhereClause(eventA.filters, projectId),
+      getEventFiltersWhereClause(eventA.filters, projectId)
     ).join(' AND ');
     const whereB = Object.values(
-      getEventFiltersWhereClause(eventB.filters, projectId),
+      getEventFiltersWhereClause(eventB.filters, projectId)
     ).join(' AND ');
 
     const funnelWindowSeconds = funnelWindow * 3600;
@@ -139,6 +141,7 @@ export class ConversionService {
 
     // Use windowFunnel approach - single scan, no JOIN
     const query = clix(this.client, timezone)
+      .abortSignal(abortSignal)
       .select<{
         event_day: string;
         total_first: number;
@@ -171,7 +174,7 @@ export class ConversionService {
           AND events.name IN ('${eventA.name}', '${eventB.name}')
           AND created_at BETWEEN toDateTime('${startDate}') AND toDateTime('${endDate}')
         GROUP BY ${group}${breakdownExpressions.length ? `, ${breakdownExpressions.join(', ')}` : ''})
-      `),
+      `)
       )
       .where('steps', '>', 0)
       .groupBy(['event_day', ...breakdownGroupBy]);
@@ -193,7 +196,7 @@ export class ConversionService {
             serie: omit(['data'], serie),
           })),
         };
-      },
+      }
     );
   }
 
@@ -206,7 +209,7 @@ export class ConversionService {
       [key: string]: string | number;
     }[],
     breakdowns: { name: string }[] = [],
-    limit: number | undefined = undefined,
+    limit: number | undefined = undefined
   ) {
     if (!breakdowns.length) {
       return [
@@ -237,7 +240,7 @@ export class ConversionService {
           acc[key] = {
             id: key,
             breakdowns: breakdowns.map(
-              (b, index) => (d[`b_${index}`] || NOT_SET_VALUE) as string,
+              (b, index) => (d[`b_${index}`] || NOT_SET_VALUE) as string
             ),
             data: [],
           };
@@ -262,7 +265,7 @@ export class ConversionService {
             rate: number;
           }[];
         }
-      >,
+      >
     );
 
     return Object.values(series).map((serie, serieIndex) => ({

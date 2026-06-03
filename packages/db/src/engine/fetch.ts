@@ -10,7 +10,10 @@ import type { ConcreteSeries, Plan } from './types';
  * Fetch data for all event series in the plan
  * This handles breakdown expansion automatically via groupByLabels
  */
-export async function fetch(plan: Plan): Promise<ConcreteSeries[]> {
+export async function fetch(
+  plan: Plan,
+  options?: { abortSignal?: AbortSignal }
+): Promise<ConcreteSeries[]> {
   const eventDefinitions = plan.definitions
     .map((definition, definitionIndex) => ({
       definition,
@@ -61,7 +64,8 @@ export async function fetch(plan: Plan): Promise<ConcreteSeries[]> {
           await getChartSql({ ...queryInput, timezone: plan.timezone }),
           {
             session_timezone: plan.timezone,
-          }
+          },
+          options
         );
 
         // Fallback: if no results with breakdowns, try without breakdowns
@@ -74,7 +78,8 @@ export async function fetch(plan: Plan): Promise<ConcreteSeries[]> {
             }),
             {
               session_timezone: plan.timezone,
-            }
+            },
+            options
           );
         }
 

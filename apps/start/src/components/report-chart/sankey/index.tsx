@@ -1,14 +1,12 @@
-import { useTRPC } from '@/integrations/trpc/react';
-import { useQuery } from '@tanstack/react-query';
-
 import type { IReportInput } from '@openpanel/validation';
-
+import { useQuery } from '@tanstack/react-query';
 import { AspectContainer } from '../aspect-container';
 import { ReportChartEmpty } from '../common/empty';
 import { ReportChartError } from '../common/error';
 import { ReportChartLoading } from '../common/loading';
 import { useReportChartContext } from '../context';
 import { Chart } from './chart';
+import { useTRPC } from '@/integrations/trpc/react';
 
 export function ReportSankeyChart() {
   const {
@@ -24,10 +22,6 @@ export function ReportSankeyChart() {
     isLazyLoading,
   } = useReportChartContext();
 
-  if (!options) {
-    return <Empty />;
-  }
-
   const input: IReportInput = {
     series,
     range,
@@ -35,19 +29,24 @@ export function ReportSankeyChart() {
     interval: 'day',
     chartType: 'sankey',
     breakdowns,
-    options,
     metric: 'sum',
     startDate,
     endDate,
     limit: 20,
     previous: false,
+    ...(options ? { options } : {}),
   };
   const trpc = useTRPC();
   const res = useQuery(
     trpc.chart.sankey.queryOptions(input, {
-      enabled: !isLazyLoading && input.series.length > 0,
-    }),
+      enabled: !!options && !isLazyLoading && input.series.length > 0,
+      trpc: { abortOnUnmount: true },
+    })
   );
+
+  if (!options) {
+    return <Empty />;
+  }
 
   if (isLazyLoading || res.isLoading) {
     return <Loading />;

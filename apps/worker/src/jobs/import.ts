@@ -2,6 +2,7 @@ import {
   backfillSessionsToProduction,
   cleanupSessionStartEndEvents,
   cleanupStagingData,
+  clearReportCacheForProjects,
   createSessionsStartEndEvents,
   db,
   generateGapBasedSessionIds,
@@ -262,6 +263,7 @@ export async function importJob(job: Job<ImportQueuePayload>) {
     await yieldToEventLoop();
 
     jobLogger.info('Session backfill complete');
+    await clearReportCacheForProjects([record.projectId]);
 
     // Done
     await updateImportStatus(jobLogger, job, importId, { step: 'completed' });
@@ -280,7 +282,7 @@ export async function importJob(job: Job<ImportQueuePayload>) {
     } catch (markError) {
       jobLogger.error(
         { err: error, markError },
-        'Failed to mark import as failed',
+        'Failed to mark import as failed'
       );
     }
 

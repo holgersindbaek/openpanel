@@ -74,8 +74,10 @@ export class Query<T = any> {
   };
   private _transform?: Record<string, (item: T) => any>;
   private _union?: Query;
+  private _abortSignal?: AbortSignal;
   private _dateRegex = /\d{4}-\d{2}-\d{2}([\s:\d.]+)?/g;
-  private _dateValueRegex = /^(?:[a-zA-Z]\w*\()?\d{4}-\d{2}-\d{2}(?:[\s:\d.]+)?\)?$/;
+  private _dateValueRegex =
+    /^(?:[a-zA-Z]\w*\()?\d{4}-\d{2}-\d{2}(?:[\s:\d.]+)?\)?$/;
   constructor(
     private client: ClickHouseClient,
     private timezone: string
@@ -342,7 +344,9 @@ export class Query<T = any> {
   }
 
   rawJoin(sql: string): this {
-    if (this._skipNext) return this;
+    if (this._skipNext) {
+      return this;
+    }
     this._rawJoins.push(sql);
     return this;
   }
@@ -545,6 +549,11 @@ export class Query<T = any> {
     return this;
   }
 
+  abortSignal(signal?: AbortSignal): this {
+    this._abortSignal = signal;
+    return this;
+  }
+
   // Execution methods
   async execute(): Promise<T[]> {
     const query = this.buildQuery();
@@ -555,6 +564,7 @@ export class Query<T = any> {
 
     const result = await this.client.query({
       query,
+      ...(this._abortSignal ? { abort_signal: this._abortSignal } : {}),
       clickhouse_settings: {
         session_timezone: this.timezone,
       },
@@ -620,6 +630,8 @@ export class Query<T = any> {
 
     // Merge settings
     this._settings = { ...this._settings, ...query._settings };
+
+    this._abortSignal = query._abortSignal;
 
     // Take the most restrictive LIMIT
     if (query._limit !== undefined) {

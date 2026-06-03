@@ -1,8 +1,7 @@
-import { TABLE_NAMES, ch, getReplicatedTableName } from '../clickhouse/client';
+import sqlstring from 'sqlstring';
+import { ch, getReplicatedTableName, TABLE_NAMES } from '../clickhouse/client';
 import { logger } from '../logger';
 import { db } from '../prisma-client';
-
-import sqlstring from 'sqlstring';
 
 export async function deleteOrganization(organizationId: string) {
   return await db.organization.delete({
@@ -51,6 +50,10 @@ export async function deleteFromClickhouse(projectIds: string[]) {
     TABLE_NAMES.cohort_metadata,
     TABLE_NAMES.profile_event_summary_mv,
     TABLE_NAMES.profile_event_property_summary_mv,
+    TABLE_NAMES.report_cache,
+    TABLE_NAMES.overview_sessions_daily_mv,
+    TABLE_NAMES.overview_profiles_daily_mv,
+    TABLE_NAMES.overview_revenue_daily_mv,
   ];
 
   for (const table of tables) {

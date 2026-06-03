@@ -1,17 +1,16 @@
-import { TRPCError, initTRPC } from '@trpc/server';
-import type { CreateFastifyContextOptions } from '@trpc/server/adapters/fastify';
-import { has } from 'ramda';
-import superjson from 'superjson';
-import { ZodError, z } from 'zod';
-
 import { COOKIE_OPTIONS, type SessionValidationResult } from '@openpanel/auth';
 import { runWithAlsSession } from '@openpanel/db';
 import { getRedisCache } from '@openpanel/redis';
 import type { ISetCookie } from '@openpanel/validation';
+import { initTRPC, TRPCError } from '@trpc/server';
+import type { CreateFastifyContextOptions } from '@trpc/server/adapters/fastify';
 import {
   createTrpcRedisLimiter,
   defaultFingerPrint,
 } from '@trpc-limiter/redis';
+import { has } from 'ramda';
+import superjson from 'superjson';
+import { ZodError, z } from 'zod';
 import { getOrganizationAccess, getProjectAccess } from './access';
 import { TRPCAccessError } from './errors';
 
@@ -32,10 +31,32 @@ export const rateLimitMiddleware = ({
   });
 
 export async function createContext({ req, res }: CreateFastifyContextOptions) {
+  const abortController = new AbortController();
+  const abortRequest = () => {
+    if (!abortController.signal.aborted) {
+      abortController.abort();
+    }
+  };
+  const abortIfResponseWasNotSent = () => {
+    if (!res.raw.writableEnded) {
+      abortRequest();
+    }
+  };
+  const cleanupAbortHandlers = () => {
+    req.raw.off('aborted', abortRequest);
+    res.raw.off('close', abortIfResponseWasNotSent);
+    res.raw.off('finish', cleanupAbortHandlers);
+    res.raw.off('error', abortRequest);
+  };
+
+  req.raw.on('aborted', abortRequest);
+  res.raw.on('close', abortIfResponseWasNotSent);
+  res.raw.on('finish', cleanupAbortHandlers);
+  res.raw.on('error', abortRequest);
+
   const cookies = (req as any).cookies as Record<string, string | undefined>;
   const setCookie: ISetCookie = (key, value, options) => {
-    // @ts-ignore
-    res.setCookie(key, value, {
+    (res as any).setCookie(key, value, {
       maxAge: options.maxAge,
       signed: options.signed,
       ...COOKIE_OPTIONS,
@@ -44,7 +65,7 @@ export async function createContext({ req, res }: CreateFastifyContextOptions) {
 
   if (process.env.NODE_ENV !== 'production') {
     await new Promise((res) =>
-      setTimeout(() => res(1), Math.min(Math.random() * 500, 200)),
+      setTimeout(() => res(1), Math.min(Math.random() * 500, 200))
     );
   }
 
@@ -56,6 +77,7 @@ export async function createContext({ req, res }: CreateFastifyContextOptions) {
     // so define it here and be safe in routers
     setCookie,
     cookies,
+    abortSignal: abortController.signal,
   };
 }
 export type Context = Awaited<ReturnType<typeof createContext>>;
@@ -152,11 +174,11 @@ const loggerMiddleware = t.middleware(
             ? rawInput.projectId
             : undefined,
         },
-        'TRPC mutation',
+        'TRPC mutation'
       );
     }
     return next();
-  },
+  }
 );
 
 const sessionScopeMiddleware = t.middleware(async ({ ctx, next }) => {
@@ -180,7 +202,7 @@ const middlewareMarker = 'middlewareMarker' as 'middlewareMarker' & {
 };
 
 export const cacheMiddleware = (
-  cbOrTtl: number | ((input: any, opts: { path: string }) => number),
+  cbOrTtl: number | ((input: any, opts: { path: string }) => number)
 ) =>
   t.middleware(async ({ ctx, next, path, type, getRawInput, input }) => {
     const ttl =
@@ -194,7 +216,7 @@ export const cacheMiddleware = (
     }
     let key = `trpc:${path}:`;
     if (rawInput) {
-      key += JSON.stringify(rawInput).replace(/\"/g, "'");
+      key += JSON.stringify(rawInput).replace(/"/g, "'");
     }
     const cache = await getRedisCache().getJson(key);
     if (cache && process.env.NODE_ENV === 'production') {
@@ -213,7 +235,7 @@ export const cacheMiddleware = (
         key,
         ttl,
         // @ts-expect-error
-        result.data,
+        result.data
       );
     }
     return result;

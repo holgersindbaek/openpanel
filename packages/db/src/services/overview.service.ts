@@ -1,10 +1,11 @@
-import { average, sum } from '@openpanel/common';
+import { average, DateTime, sum } from '@openpanel/common';
 import { chartColors } from '@openpanel/constants';
 import { type IChartEventFilter, zTimeInterval } from '@openpanel/validation';
 import sqlstring from 'sqlstring';
 import { z } from 'zod';
 import {
   ch,
+  chQuery,
   convertClickhouseDateToJs,
   isClickhouseDefaultMinDate,
   TABLE_NAMES,
@@ -14,6 +15,7 @@ import {
   getEventFiltersWhereClause,
   getSelectPropertyKey,
 } from './chart.service';
+import { getFullDayDateRange, isUtcTimezone } from './date.service';
 
 // Constants
 const ROLLUP_DATE_PREFIX = '1970-01-01';
@@ -77,6 +79,30 @@ type MetricsRow = {
 
 type MetricsSeriesRow = MetricsRow & { date: string; total_revenue: number };
 
+type OverviewRollupSessionRow = {
+  date: string;
+  total_sessions: number;
+  bounced_sessions: number;
+  total_screen_views: number;
+  duration_sum: number;
+  duration_count: number;
+};
+
+type OverviewRollupUniqueRow = {
+  date: string;
+  unique_visitors: number;
+};
+
+type OverviewRollupRevenueRow = {
+  date: string;
+  total_revenue: number;
+};
+
+type OverviewRollupBucket = {
+  key: string;
+  date: string;
+};
+
 export const zGetMetricsInput = z.object({
   projectId: z.string(),
   filters: z.array(z.any()),
@@ -87,6 +113,7 @@ export const zGetMetricsInput = z.object({
 
 export type IGetMetricsInput = z.infer<typeof zGetMetricsInput> & {
   timezone: string;
+  abortSignal?: AbortSignal;
 };
 
 export const zGetTopPagesInput = z.object({
@@ -226,6 +253,7 @@ export class OverviewService {
     interval,
     timezone,
     filters,
+    abortSignal,
   }: {
     projectId: string;
     startDate: string;
@@ -233,6 +261,7 @@ export class OverviewService {
     interval: string;
     timezone: string;
     filters: IChartEventFilter[];
+    abortSignal?: AbortSignal;
   }) {
     return clix(this.client, timezone)
       .select<{ date: string; total_revenue: number }>([
@@ -250,6 +279,7 @@ export class OverviewService {
       .rawWhere(this.getRawWhereClause('events', filters))
       .groupBy(['date'])
       .rollup()
+      .abortSignal(abortSignal)
       .transform({
         date: (item) => convertClickhouseDateToJs(item.date).toISOString(),
       });
@@ -315,6 +345,7 @@ export class OverviewService {
     endDate,
     interval,
     timezone,
+    abortSignal,
   }: IGetMetricsInput): Promise<{
     metrics: {
       bounce_rate: number;
@@ -336,6 +367,36 @@ export class OverviewService {
       total_revenue: number;
     }[];
   }> {
+    const rollupRange = this.canUseDailyRollup(filters, interval, timezone)
+      ? getFullDayDateRange({ startDate, endDate, timezone })
+      : null;
+
+    if (rollupRange) {
+      try {
+        return await this.getMetricsFromDailyRollup({
+          projectId,
+          filters,
+          startDate: rollupRange.startDate,
+          endDate: rollupRange.endDate,
+          interval,
+          timezone,
+          abortSignal,
+        });
+      } catch (error) {
+        if (abortSignal?.aborted) {
+          throw error;
+        }
+
+        console.warn(
+          'Overview daily rollup failed; falling back to raw query',
+          {
+            error,
+            projectId,
+          }
+        );
+      }
+    }
+
     return this.isPageFilter(filters)
       ? this.getMetricsWithPageFilter({
           projectId,
@@ -344,6 +405,7 @@ export class OverviewService {
           endDate,
           interval,
           timezone,
+          abortSignal,
         })
       : this.getMetricsFromSessions({
           projectId,
@@ -352,7 +414,279 @@ export class OverviewService {
           endDate,
           interval,
           timezone,
+          abortSignal,
         });
+  }
+
+  private canUseDailyRollup(
+    filters: IChartEventFilter[],
+    interval: string,
+    timezone: string
+  ) {
+    // The current materialized views are keyed by toDate(created_at), which is
+    // only equivalent to project-local full-day ranges when the project is UTC.
+    return (
+      isUtcTimezone(timezone) &&
+      filters.length === 0 &&
+      (interval === 'day' || interval === 'week' || interval === 'month')
+    );
+  }
+
+  private getRollupBucketExpression(interval: string) {
+    switch (interval) {
+      case 'week':
+        return 'toStartOfWeek(date, 1)';
+      case 'month':
+        return 'toStartOfMonth(date)';
+      default:
+        return 'toDate(date)';
+    }
+  }
+
+  private normalizeRollupDateKey(value: string) {
+    return String(value).slice(0, 10);
+  }
+
+  private rollupDateKeyToIsoDate(value: string) {
+    return `${value}T00:00:00.000Z`;
+  }
+
+  private getRollupBuckets({
+    startDate,
+    endDate,
+    interval,
+    timezone,
+  }: {
+    startDate: string;
+    endDate: string;
+    interval: string;
+    timezone: string;
+  }): OverviewRollupBucket[] {
+    const parse = (value: string) =>
+      DateTime.fromFormat(value, 'yyyy-MM-dd HH:mm:ss', { zone: timezone });
+    const start = parse(startDate);
+    const end = parse(endDate);
+    const unit =
+      interval === 'week' ? 'week' : interval === 'month' ? 'month' : 'day';
+    const buckets: string[] = [];
+    let cursor = start.startOf(unit);
+
+    while (cursor <= end) {
+      const key = cursor.toISODate();
+      if (key) {
+        buckets.push(key);
+      }
+      cursor = cursor.plus({ [unit]: 1 }).startOf(unit);
+    }
+
+    return buckets.map((key) => ({
+      key,
+      date: this.rollupDateKeyToIsoDate(key),
+    }));
+  }
+
+  private metricsFromRollupRow({
+    row,
+    uniqueVisitors,
+    totalRevenue,
+  }: {
+    row?: Partial<OverviewRollupSessionRow>;
+    uniqueVisitors: number;
+    totalRevenue: number;
+  }): MetricsSeriesRow {
+    const totalSessions = Number(row?.total_sessions ?? 0);
+    const bouncedSessions = Number(row?.bounced_sessions ?? 0);
+    const totalScreenViews = Number(row?.total_screen_views ?? 0);
+    const durationSum = Number(row?.duration_sum ?? 0);
+    const durationCount = Number(row?.duration_count ?? 0);
+    const avgSessionDuration =
+      durationCount > 0
+        ? Math.round((durationSum / durationCount / 1000) * 100) / 100
+        : 0;
+
+    return {
+      date: row?.date ?? '',
+      bounce_rate:
+        totalSessions > 0
+          ? Math.round((bouncedSessions * 10000) / totalSessions) / 100
+          : 0,
+      unique_visitors: uniqueVisitors,
+      total_sessions: totalSessions,
+      avg_session_duration: avgSessionDuration,
+      total_screen_views: totalScreenViews,
+      views_per_session:
+        totalSessions > 0
+          ? Math.round((totalScreenViews * 100) / totalSessions) / 100
+          : 0,
+      total_revenue: totalRevenue,
+    };
+  }
+
+  private async getMetricsFromDailyRollup({
+    projectId,
+    startDate,
+    endDate,
+    interval,
+    timezone,
+    abortSignal,
+  }: IGetMetricsInput): Promise<{
+    metrics: MetricsRow & { total_revenue: number };
+    series: MetricsSeriesRow[];
+  }> {
+    const dateExpr = this.getRollupBucketExpression(interval);
+    const start = sqlstring.escape(this.normalizeRollupDateKey(startDate));
+    const end = sqlstring.escape(this.normalizeRollupDateKey(endDate));
+    const project = sqlstring.escape(projectId);
+    const dateWhere = `date >= toDate(${start}) AND date <= toDate(${end})`;
+    const queryOptions = abortSignal ? { abortSignal } : undefined;
+
+    const [sessionRows, uniqueRows, overallUniqueRows, revenueRows] =
+      await Promise.all([
+        chQuery<OverviewRollupSessionRow>(
+          `
+          SELECT
+            ${dateExpr} AS date,
+            sum(total_sessions) AS total_sessions,
+            sum(bounced_sessions) AS bounced_sessions,
+            sum(total_screen_views) AS total_screen_views,
+            sum(duration_sum) AS duration_sum,
+            sum(duration_count) AS duration_count
+          FROM ${TABLE_NAMES.overview_sessions_daily_mv}
+          WHERE project_id = ${project}
+            AND ${dateWhere}
+          GROUP BY date
+          ORDER BY date ASC
+        `,
+          undefined,
+          queryOptions
+        ),
+        chQuery<OverviewRollupUniqueRow>(
+          `
+          SELECT
+            date,
+            uniq(profile_id) AS unique_visitors
+          FROM (
+            SELECT
+              ${dateExpr} AS date,
+              profile_id,
+              sum(activity) AS activity
+            FROM ${TABLE_NAMES.overview_profiles_daily_mv}
+            WHERE project_id = ${project}
+              AND ${dateWhere}
+            GROUP BY date, profile_id
+            HAVING activity > 0
+          )
+          GROUP BY date
+          ORDER BY date ASC
+        `,
+          undefined,
+          queryOptions
+        ),
+        chQuery<{ unique_visitors: number }>(
+          `
+          SELECT uniq(profile_id) AS unique_visitors
+          FROM (
+            SELECT
+              profile_id,
+              sum(activity) AS activity
+            FROM ${TABLE_NAMES.overview_profiles_daily_mv}
+            WHERE project_id = ${project}
+              AND ${dateWhere}
+            GROUP BY profile_id
+            HAVING activity > 0
+          )
+        `,
+          undefined,
+          queryOptions
+        ),
+        chQuery<OverviewRollupRevenueRow>(
+          `
+          SELECT
+            ${dateExpr} AS date,
+            sum(total_revenue) AS total_revenue
+          FROM ${TABLE_NAMES.overview_revenue_daily_mv}
+          WHERE project_id = ${project}
+            AND ${dateWhere}
+          GROUP BY date
+          ORDER BY date ASC
+        `,
+          undefined,
+          queryOptions
+        ),
+      ]);
+
+    const sessionByDate = new Map(
+      sessionRows.map((row) => [this.normalizeRollupDateKey(row.date), row])
+    );
+    const uniqueByDate = new Map(
+      uniqueRows.map((row) => [
+        this.normalizeRollupDateKey(row.date),
+        row.unique_visitors,
+      ])
+    );
+    const revenueByDate = new Map(
+      revenueRows.map((row) => [
+        this.normalizeRollupDateKey(row.date),
+        row.total_revenue,
+      ])
+    );
+
+    const series = this.getRollupBuckets({
+      startDate,
+      endDate,
+      interval,
+      timezone,
+    }).map(({ key, date }) => {
+      const row = sessionByDate.get(key);
+      return this.metricsFromRollupRow({
+        row: row ? { ...row, date } : { date },
+        uniqueVisitors: uniqueByDate.get(key) ?? 0,
+        totalRevenue: revenueByDate.get(key) ?? 0,
+      });
+    });
+
+    const overallSessionRow = sessionRows.reduce<
+      Omit<OverviewRollupSessionRow, 'date'>
+    >(
+      (acc, row) => ({
+        total_sessions: acc.total_sessions + Number(row.total_sessions ?? 0),
+        bounced_sessions:
+          acc.bounced_sessions + Number(row.bounced_sessions ?? 0),
+        total_screen_views:
+          acc.total_screen_views + Number(row.total_screen_views ?? 0),
+        duration_sum: acc.duration_sum + Number(row.duration_sum ?? 0),
+        duration_count: acc.duration_count + Number(row.duration_count ?? 0),
+      }),
+      {
+        total_sessions: 0,
+        bounced_sessions: 0,
+        total_screen_views: 0,
+        duration_sum: 0,
+        duration_count: 0,
+      }
+    );
+    const totalRevenue = revenueRows.reduce(
+      (acc, row) => acc + Number(row.total_revenue ?? 0),
+      0
+    );
+    const overall = this.metricsFromRollupRow({
+      row: overallSessionRow,
+      uniqueVisitors: overallUniqueRows[0]?.unique_visitors ?? 0,
+      totalRevenue,
+    });
+
+    return {
+      metrics: {
+        bounce_rate: overall.bounce_rate,
+        unique_visitors: overall.unique_visitors,
+        total_sessions: overall.total_sessions,
+        avg_session_duration: overall.avg_session_duration,
+        total_screen_views: overall.total_screen_views,
+        views_per_session: overall.views_per_session,
+        total_revenue: overall.total_revenue,
+      },
+      series,
+    };
   }
 
   private async getMetricsFromSessions({
@@ -362,6 +696,7 @@ export class OverviewService {
     endDate,
     interval,
     timezone,
+    abortSignal,
   }: IGetMetricsInput): Promise<{
     metrics: MetricsRow & { total_revenue: number };
     series: MetricsSeriesRow[];
@@ -401,6 +736,7 @@ export class OverviewService {
       .rollup()
       .orderBy('date', 'ASC')
       .fill(fillConfig.from, fillConfig.to, fillConfig.step)
+      .abortSignal(abortSignal)
       .transform({
         date: (item) => new Date(item.date).toISOString(),
       });
@@ -413,6 +749,7 @@ export class OverviewService {
       interval,
       timezone,
       filters,
+      abortSignal,
     });
 
     // Execute both queries in parallel and merge results
@@ -445,6 +782,7 @@ export class OverviewService {
     endDate,
     interval,
     timezone,
+    abortSignal,
   }: IGetMetricsInput): Promise<{
     metrics: MetricsRow & { total_revenue: number };
     series: MetricsSeriesRow[];
@@ -577,6 +915,7 @@ export class OverviewService {
       .groupBy(['date', 'dss.bounce_rate', 'dur.avg_session_duration'])
       .orderBy('date', 'ASC')
       .fill(fillConfig.from, fillConfig.to, fillConfig.step)
+      .abortSignal(abortSignal)
       .transform({
         date: (item) => new Date(item.date).toISOString(),
       });
@@ -589,6 +928,7 @@ export class OverviewService {
       interval,
       timezone,
       filters,
+      abortSignal,
     });
 
     // Execute both queries in parallel and merge results
@@ -629,7 +969,7 @@ export class OverviewService {
     const where = getEventFiltersWhereClause(
       filters.flatMap((item) => {
         if (!WHITELISTED_FILTERS.includes(item.name)) {
-          return []
+          return [];
         }
         if (type === 'sessions') {
           if (item.name === 'path') {
@@ -664,7 +1004,7 @@ export class OverviewService {
       }),
       undefined,
       undefined,
-      type,
+      type
     );
 
     return Object.values(where).join(' AND ');
@@ -798,7 +1138,7 @@ export class OverviewService {
     if (!WHITELISTED_FILTERS.includes(column)) {
       return [];
     }
-    
+
     const prefixColumn = COLUMN_PREFIX_MAP[column] ?? null;
 
     const selectColumns: (string | null | undefined | false)[] = [
@@ -1547,7 +1887,7 @@ export interface GetAnalyticsOverviewInput {
 }
 
 export async function getAnalyticsOverviewCore(
-  input: GetAnalyticsOverviewInput,
+  input: GetAnalyticsOverviewInput
 ) {
   const { timezone } = await getSettingsForProject(input.projectId);
   const interval = input.interval ?? 'day';

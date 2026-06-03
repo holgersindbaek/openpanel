@@ -1,6 +1,3 @@
-import { useQueryClient } from '@tanstack/react-query';
-import { useCallback } from 'react';
-import { toast } from 'sonner';
 import { AnimatedNumber } from '../animated-number';
 import { TooltipComplete } from '@/components/tooltip-complete';
 import { useLiveCounter } from '@/hooks/use-live-counter';
@@ -12,14 +9,7 @@ export interface LiveCounterProps {
 }
 
 export function LiveCounter({ projectId, shareId }: LiveCounterProps) {
-  const client = useQueryClient();
-  const onRefresh = useCallback(() => {
-    toast('Refreshed data');
-    client.refetchQueries({
-      type: 'active',
-    });
-  }, [client]);
-  const counter = useLiveCounter({ projectId, shareId, onRefresh });
+  const counter = useLiveCounter({ projectId, shareId });
 
   return (
     <TooltipComplete

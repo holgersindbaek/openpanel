@@ -18,13 +18,21 @@ import { fetch } from './fetch';
 import { format } from './format';
 import { normalize } from './normalize';
 import { plan } from './plan';
+import { fetchWithReportCache } from './report-cache';
 import type { ConcreteSeries } from './types';
+
+interface ChartExecutionOptions {
+  abortSignal?: AbortSignal;
+}
 
 /**
  * Chart Engine - Main entry point
  * Executes the pipeline: normalize -> plan -> fetch -> compute -> format
  */
-export async function executeChart(input: IReportInput): Promise<FinalChart> {
+export async function executeChart(
+  input: IReportInput,
+  options?: ChartExecutionOptions
+): Promise<FinalChart> {
   // Stage 1: Normalize input
   const normalized = await normalize(input);
 
@@ -41,7 +49,7 @@ export async function executeChart(input: IReportInput): Promise<FinalChart> {
   const executionPlan = await plan(normalized);
 
   // Stage 3: Fetch data for event series (current period)
-  const fetchedSeries = await fetch(executionPlan);
+  const fetchedSeries = await fetchWithReportCache(executionPlan, options);
 
   // Stage 4: Compute formula series
   const computedSeries = compute(fetchedSeries, executionPlan.definitions);
@@ -60,7 +68,7 @@ export async function executeChart(input: IReportInput): Promise<FinalChart> {
       ...previousPeriod,
     });
 
-    const previousFetched = await fetch(previousPlan);
+    const previousFetched = await fetchWithReportCache(previousPlan, options);
     previousSeries = compute(previousFetched, previousPlan.definitions);
   }
 
@@ -82,8 +90,11 @@ export async function executeChart(input: IReportInput): Promise<FinalChart> {
  * Executes a simplified pipeline: normalize -> fetch aggregate -> format
  */
 export async function executeAggregateChart(
-  input: IReportInput
+  input: IReportInput,
+  options?: ChartExecutionOptions
 ): Promise<FinalChart> {
+  const abortSignal = options?.abortSignal;
+
   // Stage 1: Normalize input
   const normalized = await normalize(input);
 
@@ -104,6 +115,7 @@ export async function executeAggregateChart(
     timezone,
     startDate: normalized.startDate,
     endDate: normalized.endDate,
+    ...(abortSignal ? { abortSignal } : {}),
   });
 
   // Stage 3: Compute formula series from fetched event series
@@ -123,6 +135,7 @@ export async function executeAggregateChart(
       timezone,
       startDate: previousPeriod.startDate,
       endDate: previousPeriod.endDate,
+      ...(abortSignal ? { abortSignal } : {}),
     });
 
     // Compute formula series for previous period
@@ -157,12 +170,15 @@ async function fetchAggregateSeries({
   timezone,
   startDate,
   endDate,
+  abortSignal,
 }: {
   input: Awaited<ReturnType<typeof normalize>>;
   timezone: string;
   startDate: string;
   endDate: string;
+  abortSignal?: AbortSignal;
 }): Promise<ConcreteSeries[]> {
+  const queryOptions = abortSignal ? { abortSignal } : undefined;
   const eventDefinitions = input.series
     .map((definition, definitionIndex) => ({ definition, definitionIndex }))
     .filter(
@@ -200,7 +216,8 @@ async function fetchAggregateSeries({
         await getAggregateChartSql(queryInput),
         {
           session_timezone: timezone,
-        }
+        },
+        queryOptions
       );
 
       if (queryResult.length === 0 && input.breakdowns.length > 0) {
@@ -211,7 +228,8 @@ async function fetchAggregateSeries({
           }),
           {
             session_timezone: timezone,
-          }
+          },
+          queryOptions
         );
       }
 

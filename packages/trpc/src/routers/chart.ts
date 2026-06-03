@@ -460,12 +460,18 @@ export const chartRouter = createTRPCRouter({
       const previousPeriod = getChartPrevStartEndDate(currentPeriod);
 
       const [current, previous] = await Promise.all([
-        funnelService.getFunnel({ ...chartInput, ...currentPeriod, timezone }),
+        funnelService.getFunnel({
+          ...chartInput,
+          ...currentPeriod,
+          timezone,
+          abortSignal: ctx.abortSignal,
+        }),
         chartInput.previous
           ? funnelService.getFunnel({
               ...chartInput,
               ...previousPeriod,
               timezone,
+              abortSignal: ctx.abortSignal,
             })
           : Promise.resolve(null),
       ]);
@@ -509,6 +515,7 @@ export const chartRouter = createTRPCRouter({
           ...currentPeriod,
           interval,
           timezone,
+          abortSignal: ctx.abortSignal,
         }),
         chartInput.previous
           ? conversionService.getConversion({
@@ -516,6 +523,7 @@ export const chartRouter = createTRPCRouter({
               ...previousPeriod,
               interval,
               timezone,
+              abortSignal: ctx.abortSignal,
             })
           : Promise.resolve(null),
       ]);
@@ -532,37 +540,40 @@ export const chartRouter = createTRPCRouter({
       };
     }),
 
-  sankey: protectedProcedure.input(zReportInput).query(async ({ input }) => {
-    const { timezone } = await getSettingsForProject(input.projectId);
-    const currentPeriod = getChartStartEndDate(input, timezone);
+  sankey: protectedProcedure
+    .input(zReportInput)
+    .query(async ({ input, ctx }) => {
+      const { timezone } = await getSettingsForProject(input.projectId);
+      const currentPeriod = getChartStartEndDate(input, timezone);
 
-    // Extract sankey options
-    const options = input.options;
+      // Extract sankey options
+      const options = input.options;
 
-    if (!options || options.type !== 'sankey') {
-      throw new Error('Sankey options are required');
-    }
+      if (!options || options.type !== 'sankey') {
+        throw new Error('Sankey options are required');
+      }
 
-    // Extract start/end events from series based on mode
-    const eventSeries = onlyReportEvents(input.series);
+      // Extract start/end events from series based on mode
+      const eventSeries = onlyReportEvents(input.series);
 
-    if (!eventSeries[0]) {
-      throw new Error('Start and end events are required');
-    }
+      if (!eventSeries[0]) {
+        throw new Error('Start and end events are required');
+      }
 
-    return sankeyService.getSankey({
-      projectId: input.projectId,
-      startDate: currentPeriod.startDate,
-      endDate: currentPeriod.endDate,
-      steps: options.steps,
-      mode: options.mode,
-      startEvent: eventSeries[0],
-      endEvent: eventSeries[1],
-      exclude: options.exclude || [],
-      include: options.include,
-      timezone,
-    });
-  }),
+      return sankeyService.getSankey({
+        projectId: input.projectId,
+        startDate: currentPeriod.startDate,
+        endDate: currentPeriod.endDate,
+        steps: options.steps,
+        mode: options.mode,
+        startEvent: eventSeries[0],
+        endEvent: eventSeries[1],
+        exclude: options.exclude || [],
+        include: options.include,
+        timezone,
+        abortSignal: ctx.abortSignal,
+      });
+    }),
 
   chart: chartProcedure
     .use(cacher)
@@ -586,7 +597,9 @@ export const chartRouter = createTRPCRouter({
           }
         : input;
 
-      return ChartEngine.execute(chartInput);
+      return ChartEngine.execute(chartInput, {
+        abortSignal: ctx.abortSignal,
+      });
     }),
 
   aggregate: chartProcedure
@@ -611,7 +624,9 @@ export const chartRouter = createTRPCRouter({
           }
         : input;
 
-      return AggregateChartEngine.execute(chartInput);
+      return AggregateChartEngine.execute(chartInput, {
+        abortSignal: ctx.abortSignal,
+      });
     }),
 
   cohort: chartProcedure
@@ -791,7 +806,7 @@ export const chartRouter = createTRPCRouter({
         cohort_interval: string;
         total_first_event_count: number;
         [key: string]: any;
-      }>(cohortQuery);
+      }>(cohortQuery, undefined, { abortSignal: ctx.abortSignal });
 
       return processCohortData(cohortData, diffInterval);
     }),

@@ -4,18 +4,15 @@ import { useDebounceState } from './use-debounce-state';
 import useWS from './use-ws';
 import { useTRPC } from '@/integrations/trpc/react';
 
-const FIFTEEN_SECONDS = 1000 * 15;
 /** Refetch from API when WS-only updates may be stale (e.g. visitors left). */
 const FALLBACK_STALE_MS = 1000 * 60;
 
 export function useLiveCounter({
   projectId,
   shareId,
-  onRefresh,
 }: {
   projectId: string;
   shareId?: string;
-  onRefresh?: () => void;
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
@@ -39,12 +36,6 @@ export function useLiveCounter({
     (value) => {
       if (!Number.isNaN(value)) {
         counter.set(value);
-        if (Date.now() - lastRefresh.current > FIFTEEN_SECONDS) {
-          lastRefresh.current = Date.now();
-          if (!document.hidden) {
-            onRefresh?.();
-          }
-        }
       }
     },
     {

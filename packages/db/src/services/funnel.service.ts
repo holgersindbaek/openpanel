@@ -1,9 +1,8 @@
 import { ifNaN } from '@openpanel/common';
 import type { IChartEvent, IReportInput } from '@openpanel/validation';
-import { last, reverse, uniq } from 'ramda';
+import { last, reverse } from 'ramda';
 import sqlstring from 'sqlstring';
-import { ch } from '../clickhouse/client';
-import { TABLE_NAMES } from '../clickhouse/client';
+import { ch, TABLE_NAMES } from '../clickhouse/client';
 import { clix } from '../clickhouse/query-builder';
 import { createSqlBuilder } from '../sql-builder';
 import {
@@ -39,7 +38,10 @@ export class FunnelService {
     return group === 'profile_id' ? 'profile_id' : 'session_id';
   }
 
-  getFunnelConditions(events: IChartEvent[] = [], projectId?: string): string[] {
+  getFunnelConditions(
+    events: IChartEvent[] = [],
+    projectId?: string
+  ): string[] {
     return events.map((event) => {
       const { sb, getWhere } = createSqlBuilder();
       sb.where = getEventFiltersWhereClause(event.filters, projectId);
@@ -97,7 +99,7 @@ export class FunnelService {
       .where(
         'events.name',
         'IN',
-        eventSeries.map((e) => e.name),
+        eventSeries.map((e) => e.name)
       )
       .groupBy([primaryKey, ...additionalGroupBy]);
   }
@@ -125,7 +127,7 @@ export class FunnelService {
 
   private fillFunnel(
     funnel: { level: number; count: number }[],
-    steps: number,
+    steps: number
   ) {
     const filled = Array.from({ length: steps }, (_, index) => {
       const level = index + 1;
@@ -151,7 +153,7 @@ export class FunnelService {
   toSeries(
     funnel: { level: number; count: number; [key: string]: any }[],
     breakdowns: { name: string }[] = [],
-    limit: number | undefined = undefined,
+    limit: number | undefined = undefined
   ) {
     if (!breakdowns.length) {
       return [
@@ -180,7 +182,7 @@ export class FunnelService {
         acc[key]!.push({
           id: key,
           breakdowns: breakdowns.map((b, index) =>
-            normalizeBreakdownValue(f[`b_${index}`]),
+            normalizeBreakdownValue(f[`b_${index}`])
           ),
           level: f.level,
           count: f.count,
@@ -195,7 +197,7 @@ export class FunnelService {
           level: number;
           count: number;
         }[]
-      >,
+      >
     );
 
     return Object.values(series);
@@ -205,7 +207,7 @@ export class FunnelService {
     return events.flatMap((e) =>
       e.filters
         ?.filter((f) => f.name.startsWith('profile.'))
-        .map((f) => f.name.replace('profile.', '')),
+        .map((f) => f.name.replace('profile.', ''))
     );
   }
 
@@ -218,8 +220,13 @@ export class FunnelService {
     breakdowns = [],
     limit,
     timezone = 'UTC',
-  }: IReportInput & { timezone: string; events?: IChartEvent[] }) {
-    if (!startDate || !endDate) {
+    abortSignal,
+  }: IReportInput & {
+    timezone: string;
+    events?: IChartEvent[];
+    abortSignal?: AbortSignal;
+  }) {
+    if (!(startDate && endDate)) {
       throw new Error('startDate and endDate are required');
     }
 
@@ -247,13 +254,13 @@ export class FunnelService {
     const profileFilters = this.getProfileFilters(eventSeries);
     const anyFilterOnProfile = profileFilters.length > 0;
     const anyBreakdownOnProfile = breakdowns.some((b) =>
-      b.name.startsWith('profile.'),
+      b.name.startsWith('profile.')
     );
     const anyFilterOnGroup = eventSeries.some((e) =>
-      e.filters?.some((f) => f.name.startsWith('group.')),
+      e.filters?.some((f) => f.name.startsWith('group.'))
     );
     const anyBreakdownOnGroup = breakdowns.some((b) =>
-      b.name.startsWith('group.'),
+      b.name.startsWith('group.')
     );
     const needsGroupArrayJoin =
       anyFilterOnGroup || anyBreakdownOnGroup || funnelGroup === 'group';
@@ -307,7 +314,7 @@ export class FunnelService {
       funnelCte.leftJoin(
         `(SELECT ${profileSelectColumns} FROM ${TABLE_NAMES.profiles} FINAL
           WHERE project_id = ${sqlstring.escape(projectId)}) as profile`,
-        'profile.id = events.profile_id',
+        'profile.id = events.profile_id'
       );
     }
 
@@ -321,12 +328,12 @@ export class FunnelService {
     }
 
     // Base funnel query with CTEs
-    const funnelQuery = clix(this.client, timezone);
+    const funnelQuery = clix(this.client, timezone).abortSignal(abortSignal);
 
     if (needsGroupArrayJoin) {
       funnelQuery.with(
         '_g',
-        `SELECT id, name, type, properties FROM ${TABLE_NAMES.groups} FINAL WHERE project_id = ${sqlstring.escape(projectId)}`,
+        `SELECT id, name, type, properties FROM ${TABLE_NAMES.groups} FINAL WHERE project_id = ${sqlstring.escape(projectId)}`
       );
     }
 
@@ -334,10 +341,7 @@ export class FunnelService {
 
     // windowFunnel is computed per the primary key (profile_id or session_id),
     // so we just filter out level=0 rows — no re-aggregation needed.
-    funnelQuery.with(
-      'funnel',
-      'SELECT * FROM session_funnel WHERE level != 0',
-    );
+    funnelQuery.with('funnel', 'SELECT * FROM session_funnel WHERE level != 0');
 
     funnelQuery
       .select<{
@@ -361,7 +365,7 @@ export class FunnelService {
         const maxLevel = eventSeries.length;
         const filledFunnelRes = this.fillFunnel(
           data.map((d) => ({ level: d.level, count: d.count })),
-          maxLevel,
+          maxLevel
         );
 
         const totalSessions = last(filledFunnelRes)?.count ?? 0;
@@ -397,7 +401,7 @@ export class FunnelService {
               dropoffPercent: number | null;
               previousCount: number;
               nextCount: number | null;
-            }[],
+            }[]
           )
           .map((step, index, list) => {
             return {
@@ -406,13 +410,15 @@ export class FunnelService {
               dropoffPercent: ifNaN(step.dropoffPercent, 0),
               isHighestDropoff: (() => {
                 // Skip if current step has no dropoff
-                if (!step?.dropoffCount) return false;
+                if (!step?.dropoffCount) {
+                  return false;
+                }
 
                 // Get maximum dropoff count, excluding 0s
                 const maxDropoff = Math.max(
                   ...list
                     .map((s) => s.dropoffCount || 0)
-                    .filter((count) => count > 0),
+                    .filter((count) => count > 0)
                 );
 
                 // Check if this is the first step with the highest dropoff
@@ -513,7 +519,7 @@ export async function getFunnelCore(input: {
     completedUsers,
     overallConversionRate:
       totalUsers > 0
-        ? Math.round((completedUsers / totalUsers) * 10000) / 100
+        ? Math.round((completedUsers / totalUsers) * 10_000) / 100
         : 0,
   };
 }

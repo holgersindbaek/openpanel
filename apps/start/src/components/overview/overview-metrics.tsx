@@ -16,7 +16,6 @@ import { OPChartTooltip } from '../charts/op-tooltip';
 import { XAxis } from '../charts/x-axis';
 import { YAxis } from '../charts/y-axis';
 import { Skeleton } from '../skeleton';
-import { OverviewLiveHistogram } from './overview-live-histogram';
 import { OverviewMetricCard } from './overview-metric-card';
 import { useOverviewOptions } from '@/components/overview/useOverviewOptions';
 import { useEventQueryFilters } from '@/hooks/use-event-query-filters';
@@ -92,15 +91,20 @@ export default function OverviewMetrics({
 
   const activeMetric = TITLES[metric]!;
   const overviewQuery = useQuery(
-    trpc.overview.stats.queryOptions({
-      projectId,
-      shareId,
-      range,
-      interval,
-      filters,
-      startDate,
-      endDate,
-    })
+    trpc.overview.stats.queryOptions(
+      {
+        projectId,
+        shareId,
+        range,
+        interval,
+        filters,
+        startDate,
+        endDate,
+      },
+      {
+        trpc: { abortOnUnmount: true },
+      }
+    )
   );
 
   const series = overviewQuery.data?.series ?? [];
@@ -136,8 +140,6 @@ export default function OverviewMetrics({
             unit={title.unit}
           />
         ))}
-
-        <OverviewLiveHistogram projectId={projectId} shareId={shareId} />
       </div>
 
       <div className="card p-4">

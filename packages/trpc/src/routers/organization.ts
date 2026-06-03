@@ -1,6 +1,6 @@
-import { z } from 'zod';
-
+import { generateSecureId } from '@openpanel/common/server';
 import {
+  clearReportCacheForProjects,
   connectUserToOrganization,
   db,
   getInviteById,
@@ -11,11 +11,10 @@ import {
   getOrganizations,
   getSettingsForProject,
 } from '@openpanel/db';
-import { zEditOrganization, zInviteUser } from '@openpanel/validation';
-
-import { generateSecureId } from '@openpanel/common/server';
 import { sendEmail } from '@openpanel/email';
+import { zEditOrganization, zInviteUser } from '@openpanel/validation';
 import { addDays } from 'date-fns';
+import { z } from 'zod';
 import { getOrganizationAccess } from '../access';
 import { TRPCAccessError, TRPCBadRequestError } from '../errors';
 import {
@@ -79,6 +78,7 @@ export const organizationRouter = createTRPCRouter({
           getOrganizationByProjectIdCached.clear(project.id),
         ])
       );
+      await clearReportCacheForProjects(projects.map((project) => project.id));
 
       return organization;
     }),

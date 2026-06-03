@@ -68,6 +68,10 @@ export const TABLE_NAMES = {
   cohort_metadata: 'cohort_metadata',
   profile_event_summary_mv: 'profile_event_summary_mv',
   profile_event_property_summary_mv: 'profile_event_property_summary_mv',
+  report_cache: 'report_cache',
+  overview_sessions_daily_mv: 'overview_sessions_daily_mv',
+  overview_profiles_daily_mv: 'overview_profiles_daily_mv',
+  overview_revenue_daily_mv: 'overview_revenue_daily_mv',
 };
 
 /**
@@ -319,9 +323,14 @@ export const ch = new Proxy(chTarget as unknown as ClickHouseClient, {
   },
 }) as ClickHouseClient;
 
+export interface ChQueryOptions {
+  abortSignal?: AbortSignal;
+}
+
 export async function chQueryWithMeta<T extends Record<string, any>>(
   query: string,
-  clickhouseSettings?: ClickHouseSettings
+  clickhouseSettings?: ClickHouseSettings,
+  options?: ChQueryOptions
 ): Promise<ResponseJSON<T>> {
   const start = Date.now();
   let host: string | undefined;
@@ -330,6 +339,7 @@ export async function chQueryWithMeta<T extends Record<string, any>>(
     return client.query({
       query,
       clickhouse_settings: clickhouseSettings,
+      ...(options?.abortSignal ? { abort_signal: options.abortSignal } : {}),
     });
   });
   const json = await res.json<T>();
@@ -367,9 +377,10 @@ export async function chQueryWithMeta<T extends Record<string, any>>(
 
 export async function chQuery<T extends Record<string, any>>(
   query: string,
-  clickhouseSettings?: ClickHouseSettings
+  clickhouseSettings?: ClickHouseSettings,
+  options?: ChQueryOptions
 ): Promise<T[]> {
-  return (await chQueryWithMeta<T>(query, clickhouseSettings)).data;
+  return (await chQueryWithMeta<T>(query, clickhouseSettings, options)).data;
 }
 
 export function formatClickhouseDate(

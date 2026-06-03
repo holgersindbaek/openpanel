@@ -1,7 +1,7 @@
 import { chartColors } from '@openpanel/constants';
 import { type IChartEventFilter, zChartEvent } from '@openpanel/validation';
 import { z } from 'zod';
-import { TABLE_NAMES, ch } from '../clickhouse/client';
+import { ch, TABLE_NAMES } from '../clickhouse/client';
 import { clix } from '../clickhouse/query-builder';
 import { getEventFiltersWhereClause } from './chart.service';
 
@@ -19,6 +19,7 @@ export const zGetSankeyInput = z.object({
 
 export type IGetSankeyInput = z.infer<typeof zGetSankeyInput> & {
   timezone: string;
+  abortSignal?: AbortSignal;
 };
 
 export class SankeyService {
@@ -43,7 +44,7 @@ export class SankeyService {
           return item;
         }
         return item;
-      }),
+      })
     );
 
     return Object.values(where).join(' AND ');
@@ -53,7 +54,7 @@ export class SankeyService {
     include: string[] | undefined,
     exclude: string[],
     startEventName: string | undefined,
-    endEventName: string | undefined,
+    endEventName: string | undefined
   ) {
     if (include && include.length > 0) {
       const eventNames = [...include, startEventName, endEventName]
@@ -76,7 +77,7 @@ export class SankeyService {
     projectId: string,
     startDate: string,
     endDate: string,
-    timezone: string,
+    timezone: string
   ): ReturnType<typeof clix> {
     return clix(this.client, timezone)
       .select<{ session_id: string }>(['session_id'])
@@ -97,7 +98,7 @@ export class SankeyService {
     endEvent: z.infer<typeof zChartEvent> | undefined,
     hasStartEventCTE: boolean,
     hasEndEventCTE: boolean,
-    steps: number,
+    steps: number
   ): { sessionFilter: string; eventsSliceExpr: string } {
     const defaultSliceExpr = `arraySlice(events_deduped, 1, ${steps})`;
 
@@ -150,6 +151,7 @@ export class SankeyService {
     steps: number,
     COLORS: string[],
     timezone: string,
+    abortSignal?: AbortSignal
   ): Promise<{
     nodes: Array<{
       id: string;
@@ -196,6 +198,7 @@ export class SankeyService {
 
     // Get top entry events
     const topEntriesQuery = clix(this.client, timezone)
+      .abortSignal(abortSignal)
       .with('session_paths', betweenPathsQuery)
       .select<{ entry_event: string; count: number }>([
         'entry_event',
@@ -217,6 +220,7 @@ export class SankeyService {
 
     // Get transitions for between mode
     const transitionsQuery = clix(this.client, timezone)
+      .abortSignal(abortSignal)
       .with('between_sessions', betweenSessionsQuery)
       .with(
         'session_paths',
@@ -226,7 +230,7 @@ export class SankeyService {
             'arraySlice(events, start_index, end_index - start_index + 1) as events',
           ])
           .from('between_sessions')
-          .having('events[1]', 'IN', topEntryEvents),
+          .having('events[1]', 'IN', topEntryEvents)
       )
       .select<{
         source: string;
@@ -241,8 +245,8 @@ export class SankeyService {
       ])
       .from(
         clix.exp(
-          '(SELECT arrayJoin(arrayMap(i -> (events[i], events[i + 1], i), range(1, length(events)))) as pair FROM session_paths WHERE length(events) >= 2)',
-        ),
+          '(SELECT arrayJoin(arrayMap(i -> (events[i], events[i + 1], i), range(1, length(events)))) as pair FROM session_paths WHERE length(events) >= 2)'
+        )
       )
       .groupBy(['source', 'target', 'step'])
       .orderBy('step', 'ASC')
@@ -255,7 +259,7 @@ export class SankeyService {
       topEntries,
       totalSessions,
       steps,
-      COLORS,
+      COLORS
     );
   }
 
@@ -264,6 +268,7 @@ export class SankeyService {
     steps: number,
     COLORS: string[],
     timezone: string,
+    abortSignal?: AbortSignal
   ): Promise<{
     nodes: Array<{
       id: string;
@@ -277,6 +282,7 @@ export class SankeyService {
   }> {
     // Get top entry events
     const topEntriesQuery = clix(this.client, timezone)
+      .abortSignal(abortSignal)
       .with('session_paths', sessionPathsQuery)
       .select<{ entry_event: string; count: number }>([
         'entry_event',
@@ -298,13 +304,14 @@ export class SankeyService {
 
     // Get transitions
     const transitionsQuery = clix(this.client, timezone)
+      .abortSignal(abortSignal)
       .with('session_paths_base', sessionPathsQuery)
       .with(
         'session_paths',
         clix(this.client, timezone)
           .select(['session_id', 'events'])
           .from('session_paths_base')
-          .having('events[1]', 'IN', topEntryEvents),
+          .having('events[1]', 'IN', topEntryEvents)
       )
       .select<{
         source: string;
@@ -319,8 +326,8 @@ export class SankeyService {
       ])
       .from(
         clix.exp(
-          '(SELECT arrayJoin(arrayMap(i -> (events[i], events[i + 1], i), range(1, length(events)))) as pair FROM session_paths WHERE length(events) >= 2)',
-        ),
+          '(SELECT arrayJoin(arrayMap(i -> (events[i], events[i + 1], i), range(1, length(events)))) as pair FROM session_paths WHERE length(events) >= 2)'
+        )
       )
       .groupBy(['source', 'target', 'step'])
       .orderBy('step', 'ASC')
@@ -333,7 +340,7 @@ export class SankeyService {
       topEntries,
       totalSessions,
       steps,
-      COLORS,
+      COLORS
     );
   }
 
@@ -348,6 +355,7 @@ export class SankeyService {
     exclude = [],
     include,
     timezone,
+    abortSignal,
   }: IGetSankeyInput): Promise<{
     nodes: Array<{
       id: string;
@@ -366,7 +374,7 @@ export class SankeyService {
       include,
       exclude,
       startEvent?.name,
-      endEvent?.name,
+      endEvent?.name
     );
 
     // 2. Build ordered events query
@@ -402,7 +410,7 @@ export class SankeyService {
           projectId,
           startDate,
           endDate,
-          timezone,
+          timezone
         )
       : null;
     const endEventCTE =
@@ -412,7 +420,7 @@ export class SankeyService {
             projectId,
             startDate,
             endDate,
-            timezone,
+            timezone
           )
         : null;
 
@@ -440,7 +448,7 @@ export class SankeyService {
       endEvent,
       startEventCTE !== null,
       endEventCTE !== null,
-      steps,
+      steps
     );
 
     // 6. Build truncate expression (for 'after' mode)
@@ -469,7 +477,7 @@ export class SankeyService {
     const sessionPathsQuery = eventCTEs
       .reduce(
         (builder, cte) => builder.with(cte.name, cte.query),
-        clix(this.client, timezone),
+        clix(this.client, timezone)
       )
       .with('events_deduped_cte', eventsDedupedCTE)
       .with(
@@ -480,7 +488,7 @@ export class SankeyService {
             events_sliced: string[];
           }>(['session_id', `${eventsSliceExpr} as events_sliced`])
           .from('events_deduped_cte')
-          .rawHaving(sessionFilter || '1 = 1'),
+          .rawHaving(sessionFilter || '1 = 1')
       )
       .select<{
         session_id: string;
@@ -499,10 +507,17 @@ export class SankeyService {
         steps,
         COLORS,
         timezone,
+        abortSignal
       );
     }
 
-    return this.executeSimpleMode(sessionPathsQuery, steps, COLORS, timezone);
+    return this.executeSimpleMode(
+      sessionPathsQuery,
+      steps,
+      COLORS,
+      timezone,
+      abortSignal
+    );
   }
 
   private buildSankeyFromTransitions(
@@ -515,7 +530,7 @@ export class SankeyService {
     topEntries: Array<{ entry_event: string; count: number }>,
     totalSessions: number,
     steps: number,
-    COLORS: string[],
+    COLORS: string[]
   ) {
     if (transitions.length === 0) {
       return { nodes: [], links: [] };
@@ -570,7 +585,9 @@ export class SankeyService {
 
         for (const t of fromSource) {
           // Skip self-loops
-          if (t.source === t.target) continue;
+          if (t.source === t.target) {
+            continue;
+          }
 
           const targetNodeId = getNodeId(t.target, step + 1);
 
@@ -607,7 +624,9 @@ export class SankeyService {
       }
 
       // Stop if no more nodes to process
-      if (activeNodes.size === 0) break;
+      if (activeNodes.size === 0) {
+        break;
+      }
     }
 
     // Filter links by threshold (0.25% of total sessions)
@@ -657,21 +676,23 @@ export class SankeyService {
         };
       })
       .sort((a, b) => {
-        if (a.step !== b.step) return a.step - b.step;
+        if (a.step !== b.step) {
+          return a.step - b.step;
+        }
         return b.value - a.value;
       });
 
     // Sanity check: Ensure all link endpoints exist in nodes
     const nodeIds = new Set(finalNodes.map((n) => n.id));
     const validLinks = filteredLinks.filter(
-      (link) => nodeIds.has(link.source) && nodeIds.has(link.target),
+      (link) => nodeIds.has(link.source) && nodeIds.has(link.target)
     );
 
     // Combine final nodes with the same event name
     // A final node is one that has no outgoing links
     const nodesWithOutgoing = new Set(validLinks.map((l) => l.source));
     const finalNodeIds = new Set(
-      finalNodes.filter((n) => !nodesWithOutgoing.has(n.id)).map((n) => n.id),
+      finalNodes.filter((n) => !nodesWithOutgoing.has(n.id)).map((n) => n.id)
     );
 
     // Group final nodes by event name
@@ -695,7 +716,7 @@ export class SankeyService {
         const maxStep = Math.max(...nodesToMerge.map((n) => n.step || 0));
         const totalValue = nodesToMerge.reduce(
           (sum, n) => sum + (n.value || 0),
-          0,
+          0
         );
         const mergedNodeId = `${eventName}::final`;
         const firstNode = nodesToMerge[0]!;
@@ -735,12 +756,14 @@ export class SankeyService {
     // Remove old final nodes that were merged
     const mergedOldNodeIds = new Set(nodeIdRemap.keys());
     const remainingNodes = nonFinalNodes.filter(
-      (n) => !mergedOldNodeIds.has(n.id),
+      (n) => !mergedOldNodeIds.has(n.id)
     );
 
     // Combine all nodes and sort
     const allNodes = [...remainingNodes, ...finalNodesList].sort((a, b) => {
-      if (a.step !== b.step) return a.step! - b.step!;
+      if (a.step !== b.step) {
+        return a.step! - b.step!;
+      }
       return b.value! - a.value!;
     });
 
@@ -754,12 +777,14 @@ export class SankeyService {
     const aggregatedLinks = Array.from(linkMap.entries())
       .map(([key, value]) => {
         const parts = key.split('->');
-        if (parts.length !== 2) return null;
+        if (parts.length !== 2) {
+          return null;
+        }
         return { source: parts[0]!, target: parts[1]!, value };
       })
       .filter(
         (link): link is { source: string; target: string; value: number } =>
-          link !== null,
+          link !== null
       );
 
     // Final sanity check: Ensure all link endpoints exist in nodes
@@ -770,7 +795,7 @@ export class SankeyService {
       value: number;
     }> = aggregatedLinks.filter(
       (link) =>
-        finalNodeIdsSet.has(link.source) && finalNodeIdsSet.has(link.target),
+        finalNodeIdsSet.has(link.source) && finalNodeIdsSet.has(link.target)
     );
 
     return {
