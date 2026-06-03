@@ -22,7 +22,11 @@ export function ReportSaveButton({ className }: ReportSaveButtonProps) {
   const trpc = useTRPC();
   const fetching = [
     useIsFetching(trpc.chart.chart.pathFilter()),
+    useIsFetching(trpc.chart.aggregate.pathFilter()),
+    useIsFetching(trpc.chart.funnel.pathFilter()),
+    useIsFetching(trpc.chart.conversion.pathFilter()),
     useIsFetching(trpc.chart.cohort.pathFilter()),
+    useIsFetching(trpc.chart.sankey.pathFilter()),
   ];
   const { reportId } = useParams({ strict: false });
   const dispatch = useDispatch();
@@ -38,11 +42,11 @@ export function ReportSaveButton({ className }: ReportSaveButtonProps) {
           trpc.report.list.queryFilter({
             dashboardId: res.dashboardId,
             projectId: res.projectId,
-          }),
+          })
         );
       },
       onError: handleError,
-    }),
+    })
   );
   const report = useSelector((state) => state.report);
   const isLoading = update.isPending || fetching.some((f) => f !== 0);

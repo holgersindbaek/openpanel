@@ -293,7 +293,7 @@ export async function getSettingsForOrganization(organizationId: string) {
   };
 }
 
-export async function getSettingsForProject(projectId: string) {
+async function getSettingsForProjectUncached(projectId: string) {
   const project = await db.project.findUniqueOrThrow({
     where: {
       id: projectId,
@@ -307,3 +307,8 @@ export async function getSettingsForProject(projectId: string) {
     timezone: project.organization.timezone || DEFAULT_TIMEZONE,
   };
 }
+
+export const getSettingsForProject = cacheable(
+  getSettingsForProjectUncached,
+  60 * 5
+);

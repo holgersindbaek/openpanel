@@ -7,7 +7,9 @@ import {
   getInvites,
   getMembers,
   getOrganizationById,
+  getOrganizationByProjectIdCached,
   getOrganizations,
+  getSettingsForProject,
 } from '@openpanel/db';
 import { zEditOrganization, zInviteUser } from '@openpanel/validation';
 
@@ -57,7 +59,7 @@ export const organizationRouter = createTRPCRouter({
         throw TRPCAccessError('You do not have access to this project');
       }
 
-      return db.organization.update({
+      const organization = await db.organization.update({
         where: {
           id: input.id,
         },
@@ -66,6 +68,19 @@ export const organizationRouter = createTRPCRouter({
           timezone: input.timezone,
         },
       });
+
+      const projects = await db.project.findMany({
+        where: { organizationId: input.id },
+        select: { id: true },
+      });
+      await Promise.all(
+        projects.flatMap((project) => [
+          getSettingsForProject.clear(project.id),
+          getOrganizationByProjectIdCached.clear(project.id),
+        ])
+      );
+
+      return organization;
     }),
 
   inviteUser: protectedProcedure
@@ -99,7 +114,7 @@ export const organizationRouter = createTRPCRouter({
 
       if (alreadyMember && userExists) {
         throw TRPCBadRequestError(
-          'User is already a member of the organization',
+          'User is already a member of the organization'
         );
       }
 
@@ -112,7 +127,7 @@ export const organizationRouter = createTRPCRouter({
 
       if (alreadyInvited) {
         throw TRPCBadRequestError(
-          'User is already invited to the organization',
+          'User is already invited to the organization'
         );
       }
 
@@ -164,7 +179,7 @@ export const organizationRouter = createTRPCRouter({
     .input(
       z.object({
         inviteId: z.string(),
-      }),
+      })
     )
     .mutation(async ({ input, ctx }) => {
       const invite = await db.invite.findUniqueOrThrow({
@@ -195,7 +210,7 @@ export const organizationRouter = createTRPCRouter({
         organizationId: z.string(),
         userId: z.string(),
         id: z.string(),
-      }),
+      })
     )
     .mutation(async ({ input, ctx }) => {
       const exists = await db.member.count({
@@ -241,7 +256,7 @@ export const organizationRouter = createTRPCRouter({
         userId: z.string(),
         organizationId: z.string(),
         access: z.array(z.string()),
-      }),
+      })
     )
     .mutation(async ({ input, ctx }) => {
       if (input.userId === ctx.session.userId) {
@@ -306,7 +321,7 @@ export const organizationRouter = createTRPCRouter({
       rateLimitMiddleware({
         max: 5,
         windowMs: 30_000,
-      }),
+      })
     )
     .input(z.object({ inviteId: z.string().optional() }))
     .query(async ({ input }) => {

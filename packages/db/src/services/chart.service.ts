@@ -77,6 +77,40 @@ const EVENT_UTM_BARE_COLUMNS = new Set<string>([
   'utm_content',
 ]);
 
+const EVENT_ROW_COLUMNS = [
+  'id',
+  'name',
+  'sdk_name',
+  'sdk_version',
+  'device_id',
+  'profile_id',
+  'project_id',
+  'session_id',
+  'groups',
+  'path',
+  'origin',
+  'referrer',
+  'referrer_name',
+  'referrer_type',
+  'revenue',
+  'duration',
+  'properties',
+  'created_at',
+  'country',
+  'city',
+  'region',
+  'longitude',
+  'latitude',
+  'os',
+  'os_version',
+  'browser',
+  'browser_version',
+  'device',
+  'brand',
+  'model',
+  'imported_at',
+] as const;
+
 // Normalize an incoming field name into its canonical form. Returns a string
 // suitable for `getSelectPropertyKey` / `getEventFiltersWhereClause` — i.e.
 // either a top-level column name (`referrer_name`), a `properties.foo` /
@@ -116,7 +150,7 @@ export type CohortMetadata = {
 };
 
 export async function fetchCohortsMetadata(
-  cohortIds: string[],
+  cohortIds: string[]
 ): Promise<Map<string, CohortMetadata>> {
   if (cohortIds.length === 0) {
     return new Map();
@@ -127,9 +161,7 @@ export async function fetchCohortsMetadata(
     select: { id: true, name: true },
   });
 
-  return new Map(
-    cohorts.map((c) => [c.id, { id: c.id, name: c.name }]),
-  );
+  return new Map(cohorts.map((c) => [c.id, { id: c.id, name: c.name }]));
 }
 
 export function getCohortCteName(cohortId: string): string {
@@ -142,7 +174,7 @@ export function getCohortAlias(cohortId: string): string {
 
 export function buildCohortMembershipQuery(
   cohortId: string,
-  projectId: string,
+  projectId: string
 ): string {
   return `
     SELECT profile_id
@@ -155,7 +187,7 @@ export function buildCohortMembershipQuery(
 export function buildInlineCohortJoin(
   cohortId: string,
   projectId: string,
-  tableAlias: string,
+  tableAlias: string
 ): string {
   const cohortAlias = getCohortAlias(cohortId);
   const cohortQuery = buildCohortMembershipQuery(cohortId, projectId);
@@ -174,7 +206,7 @@ export function isAllCohortsBreakdown(breakdownName: string): boolean {
 }
 
 export async function fetchProjectCohorts(
-  projectId: string,
+  projectId: string
 ): Promise<CohortMetadata[]> {
   return db.cohort.findMany({
     where: { projectId },
@@ -182,9 +214,7 @@ export async function fetchProjectCohorts(
   });
 }
 
-export function buildAllCohortsMembershipQuery(
-  projectId: string,
-): string {
+export function buildAllCohortsMembershipQuery(projectId: string): string {
   return `
     SELECT profile_id, cohort_id
     FROM ${TABLE_NAMES.cohort_members} FINAL
@@ -194,7 +224,7 @@ export function buildAllCohortsMembershipQuery(
 
 export function buildAllCohortsLabelExpr(
   cohorts: CohortMetadata[],
-  alias = '_all_cohorts',
+  alias = '_all_cohorts'
 ): string {
   if (cohorts.length === 0) {
     return "'Unknown'";
@@ -211,7 +241,7 @@ export function buildAllCohortsLabelExpr(
  * SELECT expression via `getSelectPropertyKey`.
  */
 export function collectBreakdownCohortIds(
-  breakdowns: IChartBreakdown[],
+  breakdowns: IChartBreakdown[]
 ): string[] {
   const ids = new Set<string>();
   for (const breakdown of breakdowns) {
@@ -226,22 +256,22 @@ export function collectBreakdownCohortIds(
 function getFirstSeenFromSql(projectId: string, eventName: string) {
   const eventCondition =
     eventName !== '*' ? `AND name = ${sqlstring.escape(eventName)}` : '';
+  const firstEventTuple = `tuple(${EVENT_ROW_COLUMNS.join(', ')})`;
+  const firstEventSelect = EVENT_ROW_COLUMNS.map(
+    (column, index) => `tupleElement(first_event, ${index + 1}) AS ${column}`
+  ).join(',\n');
 
   return `(
-    SELECT e.*
-    FROM ${TABLE_NAMES.events} e
-    INNER JOIN (
-      SELECT profile_id, min(created_at) as first_created_at
+    SELECT ${firstEventSelect}
+    FROM (
+      SELECT argMin(${firstEventTuple}, created_at) AS first_event
       FROM ${TABLE_NAMES.events}
       WHERE project_id = ${sqlstring.escape(projectId)}
         ${eventCondition}
         AND profile_id IS NOT NULL
         AND profile_id != ''
       GROUP BY profile_id
-    ) first_events ON e.profile_id = first_events.profile_id
-      AND e.created_at = first_events.first_created_at
-    WHERE e.project_id = ${sqlstring.escape(projectId)}
-      ${eventCondition}
+    )
   ) e`;
 }
 
@@ -346,7 +376,7 @@ export function getSelectPropertyKey(
    * joined table also exposes a `properties` column (such as the groups
    * `_g` join), otherwise ClickHouse rejects with "ambiguous identifier".
    */
-  eventsAlias?: string,
+  eventsAlias?: string
 ) {
   // Map camelCase aliases (`referrerName` → `referrer_name`) and bare UTM
   // names (`utm_source` → `properties.__query.utm_source`) into their
@@ -359,9 +389,7 @@ export function getSelectPropertyKey(
 
   if (extractedCohortId && projectId) {
     const cohortAlias = getCohortAlias(extractedCohortId);
-    const inLabel = cohortName
-      ? sqlstring.escape(cohortName)
-      : "'In Cohort'";
+    const inLabel = cohortName ? sqlstring.escape(cohortName) : "'In Cohort'";
     const notInLabel = cohortName
       ? sqlstring.escape(`Not ${cohortName}`)
       : "'Not In Cohort'";
@@ -388,9 +416,8 @@ export function getSelectPropertyKey(
 
   // Only the events table's bare `properties` map needs aliasing —
   // `profile.properties` already routes through the profile join alias.
-  const aliasPrefix = match === 'properties' && eventsAlias
-    ? `${eventsAlias}.`
-    : '';
+  const aliasPrefix =
+    match === 'properties' && eventsAlias ? `${eventsAlias}.` : '';
 
   if (property.includes('*')) {
     return `arrayMap(x -> trim(x), mapValues(mapExtractKeyLike(${aliasPrefix}${match}, ${sqlstring.escape(
@@ -431,7 +458,7 @@ export async function getChartSql({
   // as `SELECT temple_name as _uc_label_1 FROM events`, failing parse.
   let breakdowns = initialBreakdowns.filter((b) => isKnownEventField(b.name));
   const requestedAllCohortsBreakdown = breakdowns.some((b) =>
-    isAllCohortsBreakdown(b.name),
+    isAllCohortsBreakdown(b.name)
   );
   const allCohorts = requestedAllCohortsBreakdown
     ? await fetchProjectCohorts(projectId)
@@ -460,7 +487,7 @@ export async function getChartSql({
   for (const cohortId of cohortIds) {
     addCte(
       getCohortCteName(cohortId),
-      buildCohortMembershipQuery(cohortId, projectId),
+      buildCohortMembershipQuery(cohortId, projectId)
     );
     sb.joins[`cohort_${cohortId}`] =
       `LEFT ANY JOIN ${getCohortCteName(cohortId)} AS ${getCohortAlias(cohortId)} ON ${getCohortAlias(cohortId)}.profile_id = e.profile_id`;
@@ -718,7 +745,7 @@ export async function getChartSql({
       undefined,
       undefined,
       undefined,
-      'e',
+      'e'
     );
 
     if (isNumericColumn(event.property)) {
@@ -782,7 +809,7 @@ export async function getChartSql({
         projectId,
         bId ?? undefined,
         bName,
-        'e',
+        'e'
       );
       return `${propertyKey} as _uc_label_${index + 1}`;
     });
@@ -811,7 +838,7 @@ export async function getChartSql({
           projectId,
           bId ?? undefined,
           bName,
-          'e',
+          'e'
         );
         return `_uc._uc_label_${index + 1} = ${propertyKey}`;
       })
@@ -857,7 +884,7 @@ export async function getAggregateChartSql({
   // as `SELECT temple_name as _uc_label_1 FROM events`, failing parse.
   let breakdowns = initialBreakdowns.filter((b) => isKnownEventField(b.name));
   const requestedAllCohortsBreakdown = breakdowns.some((b) =>
-    isAllCohortsBreakdown(b.name),
+    isAllCohortsBreakdown(b.name)
   );
   const allCohorts = requestedAllCohortsBreakdown
     ? await fetchProjectCohorts(projectId)
@@ -883,7 +910,7 @@ export async function getAggregateChartSql({
   for (const cohortId of cohortIds) {
     addCte(
       getCohortCteName(cohortId),
-      buildCohortMembershipQuery(cohortId, projectId),
+      buildCohortMembershipQuery(cohortId, projectId)
     );
     sb.joins[`cohort_${cohortId}`] =
       `LEFT ANY JOIN ${getCohortCteName(cohortId)} AS ${getCohortAlias(cohortId)} ON ${getCohortAlias(cohortId)}.profile_id = e.profile_id`;
@@ -1095,7 +1122,7 @@ export async function getAggregateChartSql({
       projectId,
       undefined,
       undefined,
-      'e',
+      'e'
     );
 
     if (isNumericColumn(event.property)) {
@@ -1162,7 +1189,7 @@ export function getEventFiltersWhereClause(
    * funnel, conversion, sankey, event services) target — OverviewService
    * sets it to 'sessions' when querying the sessions table.
    */
-  tableScope: 'events' | 'sessions' = 'events',
+  tableScope: 'events' | 'sessions' = 'events'
 ) {
   const where: Record<string, string> = {};
   filters.forEach((filter, index) => {
@@ -1176,13 +1203,10 @@ export function getEventFiltersWhereClause(
     // `properties` column.
     const name =
       tableScope === 'sessions'
-        ? EVENT_FIELD_ALIASES[filter.name] ?? filter.name
+        ? (EVENT_FIELD_ALIASES[filter.name] ?? filter.name)
         : normalizeEventField(filter.name);
 
-    if (
-      (operator === 'inCohort' || operator === 'notInCohort') &&
-      projectId
-    ) {
+    if ((operator === 'inCohort' || operator === 'notInCohort') && projectId) {
       // Self-contained membership subselect — no caller JOIN wiring needed.
       // Cohort filters and cohort breakdowns are decoupled: the breakdown
       // path (getSelectPropertyKey) still uses a JOIN alias for SELECT
@@ -1193,10 +1217,9 @@ export function getEventFiltersWhereClause(
         ? `${eventsAlias}.profile_id`
         : 'profile_id';
       const op = operator === 'notInCohort' ? 'NOT IN' : 'IN';
-      const escapedIds = cohortIds
-        .map((c) => sqlstring.escape(c))
-        .join(', ');
-      where[id] = `${profileIdExpr} ${op} (SELECT profile_id FROM ${TABLE_NAMES.cohort_members} FINAL WHERE cohort_id IN (${escapedIds}) AND project_id = ${sqlstring.escape(projectId)})`;
+      const escapedIds = cohortIds.map((c) => sqlstring.escape(c)).join(', ');
+      where[id] =
+        `${profileIdExpr} ${op} (SELECT profile_id FROM ${TABLE_NAMES.cohort_members} FINAL WHERE cohort_id IN (${escapedIds}) AND project_id = ${sqlstring.escape(projectId)})`;
       return;
     }
 
@@ -1287,7 +1310,7 @@ export function getEventFiltersWhereClause(
         undefined,
         undefined,
         undefined,
-        eventsAlias,
+        eventsAlias
       );
       const isWildcard = propertyKey.includes('%');
       const whereFrom = propertyKey;

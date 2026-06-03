@@ -14,7 +14,7 @@ export function ReportMapChart() {
   const trpc = useTRPC();
 
   const res = useQuery(
-    trpc.chart.chart.queryOptions(
+    trpc.chart.aggregate.queryOptions(
       {
         ...chartInput,
         shareId,
@@ -22,8 +22,8 @@ export function ReportMapChart() {
       {
         placeholderData: keepPreviousData,
         enabled: !isLazyLoading,
-      },
-    ),
+      }
+    )
   );
 
   if (

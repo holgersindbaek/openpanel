@@ -99,121 +99,12 @@ export async function executeAggregateChart(
   const { timezone } = await getSettingsForProject(normalized.projectId);
 
   // Stage 2: Fetch aggregate data for current period (event series only)
-  const fetchedSeries: ConcreteSeries[] = [];
-
-  for (let i = 0; i < normalized.series.length; i++) {
-    const definition = normalized.series[i]!;
-
-    if (definition.type !== 'event') {
-      // Skip formulas - they'll be computed in the next stage
-      continue;
-    }
-
-    const event = definition as IChartEventItem & { type: 'event' };
-
-    // Build query input
-    const queryInput = {
-      event: {
-        id: event.id,
-        name: event.name,
-        segment: event.segment,
-        filters: event.filters,
-        displayName: event.displayName,
-        property: event.property,
-      },
-      projectId: normalized.projectId,
-      startDate: normalized.startDate,
-      endDate: normalized.endDate,
-      breakdowns: normalized.breakdowns,
-      limit: normalized.limit,
-      metric: normalized.metric,
-      previous: normalized.previous,
-      timezone,
-    };
-
-    // Execute aggregate query
-    let queryResult = await chQuery<ISerieDataItem>(
-      await getAggregateChartSql(queryInput),
-      {
-        session_timezone: timezone,
-      }
-    );
-
-    // Fallback: if no results with breakdowns, try without breakdowns
-    if (queryResult.length === 0 && normalized.breakdowns.length > 0) {
-      queryResult = await chQuery<ISerieDataItem>(
-        await getAggregateChartSql({
-          ...queryInput,
-          breakdowns: [],
-        }),
-        {
-          session_timezone: timezone,
-        }
-      );
-    }
-
-    // Group by labels (handles breakdown expansion)
-    const groupedSeries = groupByLabels(queryResult);
-
-    // Create concrete series for each grouped result
-    groupedSeries.forEach((grouped) => {
-      // Extract breakdown value from name array
-      const breakdownValue =
-        normalized.breakdowns.length > 0 && grouped.name.length > 1
-          ? grouped.name.slice(1).join(' - ')
-          : undefined;
-
-      // Build breakdowns object
-      const breakdowns: Record<string, string> | undefined =
-        normalized.breakdowns.length > 0 && grouped.name.length > 1
-          ? {}
-          : undefined;
-
-      if (breakdowns) {
-        normalized.breakdowns.forEach((breakdown, idx) => {
-          const breakdownNamePart = grouped.name[idx + 1];
-          if (breakdownNamePart) {
-            breakdowns[breakdown.name] = breakdownNamePart;
-          }
-        });
-      }
-
-      // Build filters including breakdown value
-      const filters = [...event.filters];
-      if (breakdownValue && normalized.breakdowns.length > 0) {
-        normalized.breakdowns.forEach((breakdown, idx) => {
-          const breakdownNamePart = grouped.name[idx + 1];
-          if (breakdownNamePart) {
-            filters.push({
-              id: `breakdown-${idx}`,
-              name: breakdown.name,
-              operator: 'is',
-              value: [breakdownNamePart],
-            });
-          }
-        });
-      }
-
-      // For aggregate charts, grouped.data should have a single data point
-      // (since we use a constant date in the query)
-      const concrete: ConcreteSeries = {
-        id: `${event.name}-${grouped.name.join('-')}-${i}`,
-        definitionId: definition.id ?? alphabetIds[i] ?? `series-${i}`,
-        definitionIndex: i,
-        name: grouped.name,
-        context: {
-          event: event.name,
-          filters,
-          breakdownValue,
-          breakdowns,
-        },
-        data: grouped.data,
-        definition,
-      };
-
-      fetchedSeries.push(concrete);
-    });
-  }
+  const fetchedSeries = await fetchAggregateSeries({
+    input: normalized,
+    timezone,
+    startDate: normalized.startDate,
+    endDate: normalized.endDate,
+  });
 
   // Stage 3: Compute formula series from fetched event series
   const computedSeries = compute(fetchedSeries, normalized.series);
@@ -227,110 +118,12 @@ export async function executeAggregateChart(
     };
     const previousPeriod = getChartPrevStartEndDate(currentPeriod);
 
-    const previousFetchedSeries: ConcreteSeries[] = [];
-
-    for (let i = 0; i < normalized.series.length; i++) {
-      const definition = normalized.series[i]!;
-
-      if (definition.type !== 'event') {
-        continue;
-      }
-
-      const event = definition as IChartEventItem & { type: 'event' };
-
-      const queryInput = {
-        event: {
-          id: event.id,
-          name: event.name,
-          segment: event.segment,
-          filters: event.filters,
-          displayName: event.displayName,
-          property: event.property,
-        },
-        projectId: normalized.projectId,
-        startDate: previousPeriod.startDate,
-        endDate: previousPeriod.endDate,
-        breakdowns: normalized.breakdowns,
-        limit: normalized.limit,
-        metric: normalized.metric,
-        previous: normalized.previous,
-        timezone,
-      };
-
-      let queryResult = await chQuery<ISerieDataItem>(
-        await getAggregateChartSql(queryInput),
-        {
-          session_timezone: timezone,
-        }
-      );
-
-      if (queryResult.length === 0 && normalized.breakdowns.length > 0) {
-        queryResult = await chQuery<ISerieDataItem>(
-          await getAggregateChartSql({
-            ...queryInput,
-            breakdowns: [],
-          }),
-          {
-            session_timezone: timezone,
-          }
-        );
-      }
-
-      const groupedSeries = groupByLabels(queryResult);
-
-      groupedSeries.forEach((grouped) => {
-        const breakdownValue =
-          normalized.breakdowns.length > 0 && grouped.name.length > 1
-            ? grouped.name.slice(1).join(' - ')
-            : undefined;
-
-        const breakdowns: Record<string, string> | undefined =
-          normalized.breakdowns.length > 0 && grouped.name.length > 1
-            ? {}
-            : undefined;
-
-        if (breakdowns) {
-          normalized.breakdowns.forEach((breakdown, idx) => {
-            const breakdownNamePart = grouped.name[idx + 1];
-            if (breakdownNamePart) {
-              breakdowns[breakdown.name] = breakdownNamePart;
-            }
-          });
-        }
-
-        const filters = [...event.filters];
-        if (breakdownValue && normalized.breakdowns.length > 0) {
-          normalized.breakdowns.forEach((breakdown, idx) => {
-            const breakdownNamePart = grouped.name[idx + 1];
-            if (breakdownNamePart) {
-              filters.push({
-                id: `breakdown-${idx}`,
-                name: breakdown.name,
-                operator: 'is',
-                value: [breakdownNamePart],
-              });
-            }
-          });
-        }
-
-        const concrete: ConcreteSeries = {
-          id: `${event.name}-${grouped.name.join('-')}-${i}`,
-          definitionId: definition.id ?? alphabetIds[i] ?? `series-${i}`,
-          definitionIndex: i,
-          name: grouped.name,
-          context: {
-            event: event.name,
-            filters,
-            breakdownValue,
-            breakdowns,
-          },
-          data: grouped.data,
-          definition,
-        };
-
-        previousFetchedSeries.push(concrete);
-      });
-    }
+    const previousFetchedSeries = await fetchAggregateSeries({
+      input: normalized,
+      timezone,
+      startDate: previousPeriod.startDate,
+      endDate: previousPeriod.endDate,
+    });
 
     // Compute formula series for previous period
     previousSeries = compute(previousFetchedSeries, normalized.series);
@@ -358,3 +151,124 @@ export const ChartEngine = {
 export const AggregateChartEngine = {
   execute: executeAggregateChart,
 };
+
+async function fetchAggregateSeries({
+  input,
+  timezone,
+  startDate,
+  endDate,
+}: {
+  input: Awaited<ReturnType<typeof normalize>>;
+  timezone: string;
+  startDate: string;
+  endDate: string;
+}): Promise<ConcreteSeries[]> {
+  const eventDefinitions = input.series
+    .map((definition, definitionIndex) => ({ definition, definitionIndex }))
+    .filter(
+      (
+        item
+      ): item is typeof item & {
+        definition: typeof item.definition & { type: 'event' };
+      } => item.definition.type === 'event'
+    );
+
+  const results = await Promise.all(
+    eventDefinitions.map(async ({ definition, definitionIndex }) => {
+      const event = definition as IChartEventItem & { type: 'event' };
+      const queryInput = {
+        event: {
+          id: event.id,
+          name: event.name,
+          segment: event.segment,
+          filters: event.filters,
+          displayName: event.displayName,
+          property: event.property,
+        },
+        projectId: input.projectId,
+        startDate,
+        endDate,
+        breakdowns: input.breakdowns,
+        limit: input.limit,
+        metric: input.metric,
+        previous: input.previous,
+        timezone,
+      };
+
+      let queryResult = await chQuery<ISerieDataItem>(
+        await getAggregateChartSql(queryInput),
+        {
+          session_timezone: timezone,
+        }
+      );
+
+      if (queryResult.length === 0 && input.breakdowns.length > 0) {
+        queryResult = await chQuery<ISerieDataItem>(
+          await getAggregateChartSql({
+            ...queryInput,
+            breakdowns: [],
+          }),
+          {
+            session_timezone: timezone,
+          }
+        );
+      }
+
+      return groupByLabels(queryResult).map((grouped) => {
+        const breakdownValue =
+          input.breakdowns.length > 0 && grouped.name.length > 1
+            ? grouped.name.slice(1).join(' - ')
+            : undefined;
+
+        const breakdowns: Record<string, string> | undefined =
+          input.breakdowns.length > 0 && grouped.name.length > 1
+            ? {}
+            : undefined;
+
+        if (breakdowns) {
+          input.breakdowns.forEach((breakdown, idx) => {
+            const breakdownNamePart = grouped.name[idx + 1];
+            if (breakdownNamePart) {
+              breakdowns[breakdown.name] = breakdownNamePart;
+            }
+          });
+        }
+
+        const filters = [...event.filters];
+        if (breakdownValue && input.breakdowns.length > 0) {
+          input.breakdowns.forEach((breakdown, idx) => {
+            const breakdownNamePart = grouped.name[idx + 1];
+            if (breakdownNamePart) {
+              filters.push({
+                id: `breakdown-${idx}`,
+                name: breakdown.name,
+                operator: 'is',
+                value: [breakdownNamePart],
+              });
+            }
+          });
+        }
+
+        return {
+          id: `${event.name}-${grouped.name.join('-')}-${definitionIndex}`,
+          definitionId:
+            definition.id ??
+            alphabetIds[definitionIndex] ??
+            `series-${definitionIndex}`,
+          definitionIndex,
+          name: grouped.name,
+          context: {
+            event: event.name,
+            filters,
+            breakdownValue,
+            breakdowns,
+          },
+          data: grouped.data,
+          definition,
+        } satisfies ConcreteSeries;
+      });
+    })
+  );
+
+  return results.flat();
+}
