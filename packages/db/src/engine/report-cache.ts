@@ -11,12 +11,14 @@ import {
   setReportCacheEntries,
 } from '../services/report-cache.service';
 import { fetch as fetchRaw } from './fetch';
+import { logReportDebug, type ReportDebugContext } from './report-debug';
 import type { ConcreteSeries, Plan } from './types';
 
 const logger = createLogger({ name: 'report-cache-engine' });
 
 interface FetchOptions {
   abortSignal?: AbortSignal;
+  debugContext?: ReportDebugContext;
 }
 
 function getSeriesKey(series: ConcreteSeries) {
@@ -144,19 +146,52 @@ function splitSeriesIntoBucketPayloads({
 async function fetchRange(
   plan: Plan,
   range: { startDate: string; endDate: string },
-  options?: FetchOptions
+  options: FetchOptions | undefined,
+  source: 'cache-miss' | 'raw-range' | 'cache-disabled' | 'ineligible'
 ) {
-  return fetchRaw(
-    {
-      ...plan,
-      input: {
-        ...plan.input,
+  const startedAt = Date.now();
+  logReportDebug(logger, 'cache.raw_fetch.start', options?.debugContext, {
+    source,
+    startDate: range.startDate,
+    endDate: range.endDate,
+  });
+
+  try {
+    const result = await fetchRaw(
+      {
+        ...plan,
+        input: {
+          ...plan.input,
+          startDate: range.startDate,
+          endDate: range.endDate,
+        },
+      },
+      options
+    );
+    logReportDebug(logger, 'cache.raw_fetch.done', options?.debugContext, {
+      source,
+      startDate: range.startDate,
+      endDate: range.endDate,
+      elapsedMs: Date.now() - startedAt,
+      series: result.length,
+    });
+    return result;
+  } catch (error) {
+    logReportDebug(
+      logger,
+      'cache.raw_fetch.error',
+      options?.debugContext,
+      {
+        source,
         startDate: range.startDate,
         endDate: range.endDate,
+        elapsedMs: Date.now() - startedAt,
+        err: error,
       },
-    },
-    options
-  );
+      'error'
+    );
+    throw error;
+  }
 }
 
 export async function fetchWithReportCache(
@@ -164,16 +199,47 @@ export async function fetchWithReportCache(
   options?: FetchOptions
 ): Promise<ConcreteSeries[]> {
   if (process.env.REPORT_CACHE_DISABLED === 'true') {
-    return fetchRaw(plan, options);
+    logReportDebug(logger, 'cache.disabled', options?.debugContext);
+    return fetchRange(
+      plan,
+      {
+        startDate: plan.input.startDate,
+        endDate: plan.input.endDate,
+      },
+      options,
+      'cache-disabled'
+    );
   }
 
   const ineligibilityReason = getReportCacheIneligibilityReason(plan.input);
   if (ineligibilityReason) {
-    return fetchRaw(plan, options);
+    logReportDebug(logger, 'cache.ineligible', options?.debugContext, {
+      reason: ineligibilityReason,
+    });
+    return fetchRange(
+      plan,
+      {
+        startDate: plan.input.startDate,
+        endDate: plan.input.endDate,
+      },
+      options,
+      'ineligible'
+    );
   }
 
   if (!isCacheableReportInterval(plan.input.interval)) {
-    return fetchRaw(plan, options);
+    logReportDebug(logger, 'cache.ineligible', options?.debugContext, {
+      reason: 'interval',
+    });
+    return fetchRange(
+      plan,
+      {
+        startDate: plan.input.startDate,
+        endDate: plan.input.endDate,
+      },
+      options,
+      'ineligible'
+    );
   }
 
   const cachePlan = getClosedReportCacheBuckets({
@@ -184,11 +250,28 @@ export async function fetchWithReportCache(
   });
 
   if (cachePlan.buckets.length === 0) {
-    return fetchRaw(plan, options);
+    logReportDebug(logger, 'cache.no_closed_buckets', options?.debugContext, {
+      rawRanges: cachePlan.rawRanges.length,
+    });
+    return fetchRange(
+      plan,
+      {
+        startDate: plan.input.startDate,
+        endDate: plan.input.endDate,
+      },
+      options,
+      'ineligible'
+    );
   }
 
   const cacheKey = getReportCacheKey(plan.input, plan.timezone);
   let cached = new Map<string, ConcreteSeries[]>();
+  const cacheReadStartedAt = Date.now();
+  logReportDebug(logger, 'cache.plan', options?.debugContext, {
+    interval: plan.input.interval,
+    buckets: cachePlan.buckets.length,
+    rawRanges: cachePlan.rawRanges.length,
+  });
 
   try {
     cached = await getReportCacheEntries<ConcreteSeries[]>({
@@ -196,12 +279,36 @@ export async function fetchWithReportCache(
       cacheKey,
       bucketIds: cachePlan.buckets.map((bucket) => bucket.id),
     });
+    logReportDebug(logger, 'cache.read.done', options?.debugContext, {
+      elapsedMs: Date.now() - cacheReadStartedAt,
+      requestedBuckets: cachePlan.buckets.length,
+      hits: cached.size,
+      misses: cachePlan.buckets.length - cached.size,
+    });
   } catch (error) {
     logger.warn(
       { err: error, projectId: plan.input.projectId },
       'Report cache read failed; falling back to raw query'
     );
-    return fetchRaw(plan, options);
+    logReportDebug(
+      logger,
+      'cache.read.error',
+      options?.debugContext,
+      {
+        elapsedMs: Date.now() - cacheReadStartedAt,
+        err: error,
+      },
+      'warn'
+    );
+    return fetchRange(
+      plan,
+      {
+        startDate: plan.input.startDate,
+        endDate: plan.input.endDate,
+      },
+      options,
+      'ineligible'
+    );
   }
 
   const chunks: ConcreteSeries[][] = [];
@@ -226,12 +333,14 @@ export async function fetchWithReportCache(
         startDate: first.startDate,
         endDate: last.endDate,
       },
-      options
+      options,
+      'cache-miss'
     );
     chunks.push(fetched);
 
     if (!options?.abortSignal?.aborted) {
       try {
+        const writeStartedAt = Date.now();
         await setReportCacheEntries({
           projectId: plan.input.projectId,
           cacheKey,
@@ -244,18 +353,37 @@ export async function fetchWithReportCache(
             timezone: plan.timezone,
           }),
         });
+        logReportDebug(logger, 'cache.write.done', options?.debugContext, {
+          elapsedMs: Date.now() - writeStartedAt,
+          buckets: group.length,
+        });
       } catch (error) {
         logger.warn(
           { err: error, projectId: plan.input.projectId },
           'Report cache write failed'
+        );
+        logReportDebug(
+          logger,
+          'cache.write.error',
+          options?.debugContext,
+          {
+            buckets: group.length,
+            err: error,
+          },
+          'warn'
         );
       }
     }
   }
 
   for (const range of cachePlan.rawRanges) {
-    chunks.push(await fetchRange(plan, range, options));
+    chunks.push(await fetchRange(plan, range, options, 'raw-range'));
   }
 
-  return mergeConcreteSeriesChunks(chunks);
+  const merged = mergeConcreteSeriesChunks(chunks);
+  logReportDebug(logger, 'cache.done', options?.debugContext, {
+    chunks: chunks.length,
+    mergedSeries: merged.length,
+  });
+  return merged;
 }

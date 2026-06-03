@@ -1,6 +1,7 @@
 import type { ISerieDataItem } from '@openpanel/common';
 import { groupByLabels } from '@openpanel/common';
 import { alphabetIds } from '@openpanel/constants';
+import { createLogger } from '@openpanel/logger';
 import type {
   FinalChart,
   IChartEventItem,
@@ -14,16 +15,20 @@ import {
   getSettingsForProject,
 } from '../services/organization.service';
 import { compute } from './compute';
-import { fetch } from './fetch';
 import { format } from './format';
 import { normalize } from './normalize';
 import { plan } from './plan';
 import { fetchWithReportCache } from './report-cache';
-import type { ConcreteSeries } from './types';
+import {
+  createReportQueryId,
+  logReportDebug,
+  type ReportDebugContext,
+} from './report-debug';
+import type { ChartExecutionOptions, ConcreteSeries } from './types';
 
-interface ChartExecutionOptions {
-  abortSignal?: AbortSignal;
-}
+const logger = createLogger({ name: 'report-engine' });
+
+export * from './report-debug';
 
 /**
  * Chart Engine - Main entry point
@@ -33,6 +38,11 @@ export async function executeChart(
   input: IReportInput,
   options?: ChartExecutionOptions
 ): Promise<FinalChart> {
+  const startedAt = Date.now();
+  logReportDebug(logger, 'engine.start', options?.debugContext, {
+    engine: 'chart',
+  });
+
   // Stage 1: Normalize input
   const normalized = await normalize(input);
 
@@ -47,9 +57,23 @@ export async function executeChart(
 
   // Stage 2: Create execution plan
   const executionPlan = await plan(normalized);
+  logReportDebug(logger, 'engine.plan', options?.debugContext, {
+    engine: 'chart',
+    timezone: executionPlan.timezone,
+    startDate: normalized.startDate,
+    endDate: normalized.endDate,
+    definitions: executionPlan.definitions.length,
+    concreteSeries: executionPlan.concreteSeries.length,
+    previous: Boolean(input.previous),
+  });
 
   // Stage 3: Fetch data for event series (current period)
   const fetchedSeries = await fetchWithReportCache(executionPlan, options);
+  logReportDebug(logger, 'engine.fetched', options?.debugContext, {
+    engine: 'chart',
+    period: 'current',
+    series: fetchedSeries.length,
+  });
 
   // Stage 4: Compute formula series
   const computedSeries = compute(fetchedSeries, executionPlan.definitions);
@@ -70,6 +94,11 @@ export async function executeChart(
 
     const previousFetched = await fetchWithReportCache(previousPlan, options);
     previousSeries = compute(previousFetched, previousPlan.definitions);
+    logReportDebug(logger, 'engine.fetched', options?.debugContext, {
+      engine: 'chart',
+      period: 'previous',
+      series: previousFetched.length,
+    });
   }
 
   // Stage 6: Format final output with previous period data
@@ -82,6 +111,12 @@ export async function executeChart(
     normalized.limit
   );
 
+  logReportDebug(logger, 'engine.done', options?.debugContext, {
+    engine: 'chart',
+    elapsedMs: Date.now() - startedAt,
+    responseSeries: response.series.length,
+  });
+
   return response;
 }
 
@@ -93,7 +128,13 @@ export async function executeAggregateChart(
   input: IReportInput,
   options?: ChartExecutionOptions
 ): Promise<FinalChart> {
+  const startedAt = Date.now();
   const abortSignal = options?.abortSignal;
+  const debugContext = options?.debugContext;
+
+  logReportDebug(logger, 'engine.start', debugContext, {
+    engine: 'aggregate',
+  });
 
   // Stage 1: Normalize input
   const normalized = await normalize(input);
@@ -108,6 +149,14 @@ export async function executeAggregateChart(
   }
 
   const { timezone } = await getSettingsForProject(normalized.projectId);
+  logReportDebug(logger, 'engine.plan', debugContext, {
+    engine: 'aggregate',
+    timezone,
+    startDate: normalized.startDate,
+    endDate: normalized.endDate,
+    definitions: normalized.series.length,
+    previous: Boolean(input.previous),
+  });
 
   // Stage 2: Fetch aggregate data for current period (event series only)
   const fetchedSeries = await fetchAggregateSeries({
@@ -116,6 +165,12 @@ export async function executeAggregateChart(
     startDate: normalized.startDate,
     endDate: normalized.endDate,
     ...(abortSignal ? { abortSignal } : {}),
+    ...(debugContext ? { debugContext } : {}),
+  });
+  logReportDebug(logger, 'engine.fetched', debugContext, {
+    engine: 'aggregate',
+    period: 'current',
+    series: fetchedSeries.length,
   });
 
   // Stage 3: Compute formula series from fetched event series
@@ -136,10 +191,16 @@ export async function executeAggregateChart(
       startDate: previousPeriod.startDate,
       endDate: previousPeriod.endDate,
       ...(abortSignal ? { abortSignal } : {}),
+      ...(debugContext ? { debugContext } : {}),
     });
 
     // Compute formula series for previous period
     previousSeries = compute(previousFetchedSeries, normalized.series);
+    logReportDebug(logger, 'engine.fetched', debugContext, {
+      engine: 'aggregate',
+      period: 'previous',
+      series: previousFetchedSeries.length,
+    });
   }
 
   // Stage 5: Format final output with previous period data
@@ -151,6 +212,12 @@ export async function executeAggregateChart(
     previousSeries,
     normalized.limit
   );
+
+  logReportDebug(logger, 'engine.done', debugContext, {
+    engine: 'aggregate',
+    elapsedMs: Date.now() - startedAt,
+    responseSeries: response.series.length,
+  });
 
   return response;
 }
@@ -171,14 +238,15 @@ async function fetchAggregateSeries({
   startDate,
   endDate,
   abortSignal,
+  debugContext,
 }: {
   input: Awaited<ReturnType<typeof normalize>>;
   timezone: string;
   startDate: string;
   endDate: string;
   abortSignal?: AbortSignal;
+  debugContext?: ReportDebugContext;
 }): Promise<ConcreteSeries[]> {
-  const queryOptions = abortSignal ? { abortSignal } : undefined;
   const eventDefinitions = input.series
     .map((definition, definitionIndex) => ({ definition, definitionIndex }))
     .filter(
@@ -191,7 +259,13 @@ async function fetchAggregateSeries({
 
   const results = await Promise.all(
     eventDefinitions.map(async ({ definition, definitionIndex }) => {
+      const startedAt = Date.now();
       const event = definition as IChartEventItem & { type: 'event' };
+      const queryId = createReportQueryId(
+        debugContext,
+        'aggregate',
+        definitionIndex
+      );
       const queryInput = {
         event: {
           id: event.id,
@@ -212,15 +286,39 @@ async function fetchAggregateSeries({
         timezone,
       };
 
+      logReportDebug(logger, 'query.start', debugContext, {
+        engine: 'aggregate',
+        queryId,
+        definitionIndex,
+        event: event.name,
+        segment: event.segment,
+        property: event.property,
+        filters: event.filters.length,
+        breakdowns: input.breakdowns.map((item) => item.name),
+        startDate,
+        endDate,
+      });
+
       let queryResult = await chQuery<ISerieDataItem>(
         await getAggregateChartSql(queryInput),
         {
           session_timezone: timezone,
         },
-        queryOptions
+        {
+          ...(abortSignal ? { abortSignal } : {}),
+          ...(debugContext ? { debugContext } : {}),
+          ...(queryId ? { queryId } : {}),
+          debugLabel: 'aggregate',
+        }
       );
 
       if (queryResult.length === 0 && input.breakdowns.length > 0) {
+        logReportDebug(logger, 'query.fallback', debugContext, {
+          engine: 'aggregate',
+          queryId,
+          definitionIndex,
+          reason: 'empty-breakdown-result',
+        });
         queryResult = await chQuery<ISerieDataItem>(
           await getAggregateChartSql({
             ...queryInput,
@@ -229,11 +327,26 @@ async function fetchAggregateSeries({
           {
             session_timezone: timezone,
           },
-          queryOptions
+          {
+            ...(abortSignal ? { abortSignal } : {}),
+            ...(debugContext ? { debugContext } : {}),
+            ...(queryId ? { queryId: `${queryId}_fallback` } : {}),
+            debugLabel: 'aggregate-fallback',
+          }
         );
       }
 
-      return groupByLabels(queryResult).map((grouped) => {
+      const groupedResults = groupByLabels(queryResult);
+      logReportDebug(logger, 'query.done', debugContext, {
+        engine: 'aggregate',
+        queryId,
+        definitionIndex,
+        elapsedMs: Date.now() - startedAt,
+        rows: queryResult.length,
+        groupedSeries: groupedResults.length,
+      });
+
+      return groupedResults.map((grouped) => {
         const breakdownValue =
           input.breakdowns.length > 0 && grouped.name.length > 1
             ? grouped.name.slice(1).join(' - ')

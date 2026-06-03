@@ -1,10 +1,23 @@
 import type { ISerieDataItem } from '@openpanel/common';
 import { groupByLabels } from '@openpanel/common';
 import { alphabetIds } from '@openpanel/constants';
+import { createLogger } from '@openpanel/logger';
 import type { IGetChartDataInput } from '@openpanel/validation';
 import { chQuery } from '../clickhouse/client';
 import { getChartSql } from '../services/chart.service';
+import {
+  createReportQueryId,
+  logReportDebug,
+  type ReportDebugContext,
+} from './report-debug';
 import type { ConcreteSeries, Plan } from './types';
+
+const logger = createLogger({ name: 'report-fetch' });
+
+interface FetchOptions {
+  abortSignal?: AbortSignal;
+  debugContext?: ReportDebugContext;
+}
 
 /**
  * Fetch data for all event series in the plan
@@ -12,7 +25,7 @@ import type { ConcreteSeries, Plan } from './types';
  */
 export async function fetch(
   plan: Plan,
-  options?: { abortSignal?: AbortSignal }
+  options?: FetchOptions
 ): Promise<ConcreteSeries[]> {
   const eventDefinitions = plan.definitions
     .map((definition, definitionIndex) => ({
@@ -34,7 +47,13 @@ export async function fetch(
   const results = await Promise.all(
     eventDefinitions.map(
       async ({ definition, definitionIndex, placeholder }) => {
+        const startedAt = Date.now();
         const event = definition;
+        const queryId = createReportQueryId(
+          options?.debugContext,
+          'chart',
+          definitionIndex
+        );
 
         // Build query input
         const queryInput: IGetChartDataInput = {
@@ -59,17 +78,46 @@ export async function fetch(
           offset: plan.input.offset,
         };
 
+        logReportDebug(logger, 'query.start', options?.debugContext, {
+          engine: 'chart',
+          queryId,
+          definitionIndex,
+          event: event.name,
+          segment: event.segment,
+          property: event.property,
+          filters: event.filters.length,
+          breakdowns: plan.input.breakdowns.map((item) => item.name),
+          startDate: plan.input.startDate,
+          endDate: plan.input.endDate,
+          interval: plan.input.interval,
+        });
+
         // Execute query
         let queryResult = await chQuery<ISerieDataItem>(
           await getChartSql({ ...queryInput, timezone: plan.timezone }),
           {
             session_timezone: plan.timezone,
           },
-          options
+          {
+            ...(options?.abortSignal
+              ? { abortSignal: options.abortSignal }
+              : {}),
+            ...(options?.debugContext
+              ? { debugContext: options.debugContext }
+              : {}),
+            ...(queryId ? { queryId } : {}),
+            debugLabel: 'chart',
+          }
         );
 
         // Fallback: if no results with breakdowns, try without breakdowns
         if (queryResult.length === 0 && plan.input.breakdowns.length > 0) {
+          logReportDebug(logger, 'query.fallback', options?.debugContext, {
+            engine: 'chart',
+            queryId,
+            definitionIndex,
+            reason: 'empty-breakdown-result',
+          });
           queryResult = await chQuery<ISerieDataItem>(
             await getChartSql({
               ...queryInput,
@@ -79,12 +127,29 @@ export async function fetch(
             {
               session_timezone: plan.timezone,
             },
-            options
+            {
+              ...(options?.abortSignal
+                ? { abortSignal: options.abortSignal }
+                : {}),
+              ...(options?.debugContext
+                ? { debugContext: options.debugContext }
+                : {}),
+              ...(queryId ? { queryId: `${queryId}_fallback` } : {}),
+              debugLabel: 'chart-fallback',
+            }
           );
         }
 
         // Group by labels (handles breakdown expansion)
         const groupedSeries = groupByLabels(queryResult);
+        logReportDebug(logger, 'query.done', options?.debugContext, {
+          engine: 'chart',
+          queryId,
+          definitionIndex,
+          elapsedMs: Date.now() - startedAt,
+          rows: queryResult.length,
+          groupedSeries: groupedSeries.length,
+        });
 
         // Create concrete series for each grouped result
         return groupedSeries.map((grouped) => {

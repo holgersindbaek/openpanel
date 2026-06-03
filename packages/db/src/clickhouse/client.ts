@@ -8,6 +8,7 @@ import type { NodeClickHouseClientConfigOptions } from '@clickhouse/client/dist/
 import { createLogger } from '@openpanel/logger';
 import type { IInterval } from '@openpanel/validation';
 import sqlstring from 'sqlstring';
+import type { ReportDebugContext } from '../engine/report-debug';
 import { RoundRobinPicker, withRoundRobinRetry } from './round-robin';
 
 export { createClient } from '@clickhouse/client';
@@ -370,6 +371,9 @@ export const ch = new Proxy(chTarget as unknown as ClickHouseClient, {
 
 export interface ChQueryOptions {
   abortSignal?: AbortSignal;
+  debugContext?: ReportDebugContext;
+  debugLabel?: string;
+  queryId?: string;
 }
 
 export async function chQueryWithMeta<T extends Record<string, any>>(
@@ -383,6 +387,7 @@ export async function chQueryWithMeta<T extends Record<string, any>>(
     host = urlHostname(ctx.url);
     return client.query({
       query,
+      ...(options?.queryId ? { query_id: options.queryId } : {}),
       clickhouse_settings: clickhouseSettings,
       ...(options?.abortSignal ? { abort_signal: options.abortSignal } : {}),
     });
@@ -408,13 +413,17 @@ export async function chQueryWithMeta<T extends Record<string, any>>(
   logger.info(
     {
       host,
+      queryId: options?.queryId,
+      reportDebugId: options?.debugContext?.id,
+      reportRoute: options?.debugContext?.route,
+      reportQueryLabel: options?.debugLabel,
       query: cleanQuery(query),
       rows: json.rows,
       stats: response.statistics,
       elapsed: Date.now() - start,
       clickhouseSettings,
     },
-    'query info'
+    options?.debugContext ? 'report.clickhouse.query' : 'query info'
   );
 
   return response;

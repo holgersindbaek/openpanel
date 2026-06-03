@@ -1,10 +1,6 @@
 import type {
-  IChartBreakdown,
-  IChartEvent,
   IChartEventFilter,
   IChartEventItem,
-  IChartFormula,
-  IReportInput,
   IReportInputWithDates,
 } from '@openpanel/validation';
 
@@ -18,12 +14,12 @@ export type SeriesDefinition = IChartEventItem;
  * Concrete Series - A resolved series that will be displayed as a line/bar on the chart
  * When breakdowns exist, one SeriesDefinition can expand into multiple ConcreteSeries
  */
-export type ConcreteSeries = {
+export interface ConcreteSeries {
   id: string;
   definitionId: string; // ID of the SeriesDefinition this came from
   definitionIndex: number; // Index in the original series array (for A, B, C references)
   name: string[]; // Display name parts: ["Session Start", "Chrome"] or ["Formula 1"]
-  
+
   // Context for Drill-down / Profiles
   // This contains everything needed to query 'who are these users?'
   context: {
@@ -42,22 +38,27 @@ export type ConcreteSeries = {
 
   // The original definition (event or formula)
   definition: SeriesDefinition;
-};
+}
 
 /**
  * Plan - The execution plan after normalization and expansion
  */
-export type Plan = {
+export interface Plan {
   concreteSeries: ConcreteSeries[];
   definitions: SeriesDefinition[];
   input: IReportInputWithDates;
   timezone: string;
-};
+}
+
+export interface ChartExecutionOptions {
+  abortSignal?: AbortSignal;
+  debugContext?: import('./report-debug').ReportDebugContext;
+}
 
 /**
  * Chart Response - The final output format
  */
-export type ChartResponse = {
+export interface ChartResponse {
   series: Array<{
     id: string;
     name: string[];
@@ -81,5 +82,4 @@ export type ChartResponse = {
     min: number;
     max: number;
   };
-};
-
+}

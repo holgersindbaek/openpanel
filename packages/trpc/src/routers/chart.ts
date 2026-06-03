@@ -21,14 +21,17 @@ import {
   getSettingsForProject,
   type IServiceProfile,
   isKnownEventField,
+  isReportDebugLoggingEnabled,
   normalizeEventField,
   onlyReportEvents,
+  type ReportDebugContext,
   sankeyService,
   TABLE_NAMES,
   validateShareAccess,
 } from '@openpanel/db';
 import {
   type IChartEvent,
+  type IReportInput,
   zChartSeries,
   zCriteria,
   zRange,
@@ -52,6 +55,125 @@ import {
   protectedProcedure,
   publicProcedure,
 } from '../trpc';
+
+interface ReportDebugInputSummary {
+  breakdowns: IReportInput['breakdowns'];
+  chartType?: IReportInput['chartType'];
+  endDate?: string | null;
+  interval?: IReportInput['interval'];
+  metric?: IReportInput['metric'];
+  previous?: boolean;
+  projectId: string;
+  range?: IReportInput['range'];
+  series: IReportInput['series'];
+  startDate?: string | null;
+  id?: string;
+  shareId?: string;
+}
+
+function getFilterCount(input: Pick<IReportInput, 'series'>) {
+  return onlyReportEvents(input.series).reduce(
+    (total, item) => total + item.filters.length,
+    0
+  );
+}
+
+function summarizeReportInput(input: ReportDebugInputSummary) {
+  const eventSeries = onlyReportEvents(input.series);
+
+  return {
+    chartType: input.chartType,
+    range: input.range,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    interval: input.interval,
+    metric: input.metric,
+    previous: Boolean(input.previous),
+    series: input.series.length,
+    eventSeries: eventSeries.map((item) => ({
+      name: item.name,
+      segment: item.segment,
+      property: item.property,
+      filters: item.filters.length,
+    })),
+    formulaSeries: input.series.filter((item) => item.type === 'formula')
+      .length,
+    breakdowns: input.breakdowns.map((item) => item.name),
+    filters: getFilterCount(input),
+    share: Boolean(input.shareId),
+  };
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function withReportDebug<T>({
+  ctx,
+  input,
+  route,
+  run,
+}: {
+  ctx: { req: { id: string; log: any } };
+  input: ReportDebugInputSummary;
+  route: string;
+  run: (debugContext?: ReportDebugContext) => Promise<T>;
+}) {
+  if (!isReportDebugLoggingEnabled()) {
+    return run();
+  }
+
+  const startedAt = Date.now();
+  const debugContext: ReportDebugContext = {
+    id: `${ctx.req.id}:${route}:${startedAt.toString(36)}`,
+    route,
+    projectId: input.projectId,
+    reportId: input.id,
+  };
+
+  ctx.req.log.info(
+    {
+      event: 'report.start',
+      reportDebugId: debugContext.id,
+      reportRoute: route,
+      projectId: input.projectId,
+      reportId: input.id,
+      ...summarizeReportInput(input),
+    },
+    'report.start'
+  );
+
+  try {
+    const result = await run(debugContext);
+    ctx.req.log.info(
+      {
+        event: 'report.done',
+        reportDebugId: debugContext.id,
+        reportRoute: route,
+        projectId: input.projectId,
+        reportId: input.id,
+        elapsedMs: Date.now() - startedAt,
+      },
+      'report.done'
+    );
+    return result;
+  } catch (error) {
+    ctx.req.log.error(
+      {
+        event: 'report.error',
+        reportDebugId: debugContext.id,
+        reportRoute: route,
+        projectId: input.projectId,
+        reportId: input.id,
+        elapsedMs: Date.now() - startedAt,
+        err: error,
+        errorMessage: getErrorMessage(error),
+      },
+      'report.error'
+    );
+    throw error;
+  }
+}
 
 function utc(date: string | Date) {
   if (typeof date === 'string') {
@@ -88,12 +210,14 @@ const chartProcedure = publicProcedure.use(
         }
       );
       if (!shareValidation.isValid) {
+        // biome-ignore lint/style/useThrowNewError: TRPCAccessError is a factory, not a constructor.
         throw TRPCAccessError('You do not have access to this share');
       }
 
       // Fetch report
       const report = await getReportById(rawInput.id);
       if (!report) {
+        // biome-ignore lint/style/useThrowNewError: TRPCAccessError is a factory, not a constructor.
         throw TRPCAccessError('Report not found');
       }
 
@@ -106,6 +230,7 @@ const chartProcedure = publicProcedure.use(
 
     // Regular member access check
     if (!ctx.session?.userId) {
+      // biome-ignore lint/style/useThrowNewError: TRPCAccessError is a factory, not a constructor.
       throw TRPCAccessError('Authentication required');
     }
     const access = await getProjectAccess({
@@ -113,6 +238,7 @@ const chartProcedure = publicProcedure.use(
       userId: ctx.session.userId,
     });
     if (!access) {
+      // biome-ignore lint/style/useThrowNewError: TRPCAccessError is a factory, not a constructor.
       throw TRPCAccessError('You do not have access to this project');
     }
 
@@ -455,31 +581,40 @@ export const chartRouter = createTRPCRouter({
           }
         : input;
 
-      const { timezone } = await getSettingsForProject(chartInput.projectId);
-      const currentPeriod = getChartStartEndDate(chartInput, timezone);
-      const previousPeriod = getChartPrevStartEndDate(currentPeriod);
+      return withReportDebug({
+        ctx,
+        input: chartInput,
+        route: 'funnel',
+        run: async () => {
+          const { timezone } = await getSettingsForProject(
+            chartInput.projectId
+          );
+          const currentPeriod = getChartStartEndDate(chartInput, timezone);
+          const previousPeriod = getChartPrevStartEndDate(currentPeriod);
 
-      const [current, previous] = await Promise.all([
-        funnelService.getFunnel({
-          ...chartInput,
-          ...currentPeriod,
-          timezone,
-          abortSignal: ctx.abortSignal,
-        }),
-        chartInput.previous
-          ? funnelService.getFunnel({
+          const [current, previous] = await Promise.all([
+            funnelService.getFunnel({
               ...chartInput,
-              ...previousPeriod,
+              ...currentPeriod,
               timezone,
               abortSignal: ctx.abortSignal,
-            })
-          : Promise.resolve(null),
-      ]);
+            }),
+            chartInput.previous
+              ? funnelService.getFunnel({
+                  ...chartInput,
+                  ...previousPeriod,
+                  timezone,
+                  abortSignal: ctx.abortSignal,
+                })
+              : Promise.resolve(null),
+          ]);
 
-      return {
-        current,
-        previous,
-      };
+          return {
+            current,
+            previous,
+          };
+        },
+      });
     }),
 
   conversion: chartProcedure
@@ -503,41 +638,50 @@ export const chartRouter = createTRPCRouter({
           }
         : input;
 
-      const { timezone } = await getSettingsForProject(chartInput.projectId);
-      const currentPeriod = getChartStartEndDate(chartInput, timezone);
-      const previousPeriod = getChartPrevStartEndDate(currentPeriod);
+      return withReportDebug({
+        ctx,
+        input: chartInput,
+        route: 'conversion',
+        run: async () => {
+          const { timezone } = await getSettingsForProject(
+            chartInput.projectId
+          );
+          const currentPeriod = getChartStartEndDate(chartInput, timezone);
+          const previousPeriod = getChartPrevStartEndDate(currentPeriod);
 
-      const interval = chartInput.interval;
+          const interval = chartInput.interval;
 
-      const [current, previous] = await Promise.all([
-        conversionService.getConversion({
-          ...chartInput,
-          ...currentPeriod,
-          interval,
-          timezone,
-          abortSignal: ctx.abortSignal,
-        }),
-        chartInput.previous
-          ? conversionService.getConversion({
+          const [current, previous] = await Promise.all([
+            conversionService.getConversion({
               ...chartInput,
-              ...previousPeriod,
+              ...currentPeriod,
               interval,
               timezone,
               abortSignal: ctx.abortSignal,
-            })
-          : Promise.resolve(null),
-      ]);
+            }),
+            chartInput.previous
+              ? conversionService.getConversion({
+                  ...chartInput,
+                  ...previousPeriod,
+                  interval,
+                  timezone,
+                  abortSignal: ctx.abortSignal,
+                })
+              : Promise.resolve(null),
+          ]);
 
-      return {
-        current: current.map((serie, sIndex) => ({
-          ...serie,
-          data: serie.data.map((d, dIndex) => ({
-            ...d,
-            previousRate: previous?.[sIndex]?.data?.[dIndex]?.rate,
-          })),
-        })),
-        previous,
-      };
+          return {
+            current: current.map((serie, sIndex) => ({
+              ...serie,
+              data: serie.data.map((d, dIndex) => ({
+                ...d,
+                previousRate: previous?.[sIndex]?.data?.[dIndex]?.rate,
+              })),
+            })),
+            previous,
+          };
+        },
+      });
     }),
 
   sankey: protectedProcedure
@@ -555,23 +699,31 @@ export const chartRouter = createTRPCRouter({
 
       // Extract start/end events from series based on mode
       const eventSeries = onlyReportEvents(input.series);
+      const startEvent = eventSeries[0];
+      const endEvent = eventSeries[1];
 
-      if (!eventSeries[0]) {
+      if (!startEvent) {
         throw new Error('Start and end events are required');
       }
 
-      return sankeyService.getSankey({
-        projectId: input.projectId,
-        startDate: currentPeriod.startDate,
-        endDate: currentPeriod.endDate,
-        steps: options.steps,
-        mode: options.mode,
-        startEvent: eventSeries[0],
-        endEvent: eventSeries[1],
-        exclude: options.exclude || [],
-        include: options.include,
-        timezone,
-        abortSignal: ctx.abortSignal,
+      return withReportDebug({
+        ctx,
+        input,
+        route: 'sankey',
+        run: () =>
+          sankeyService.getSankey({
+            projectId: input.projectId,
+            startDate: currentPeriod.startDate,
+            endDate: currentPeriod.endDate,
+            steps: options.steps,
+            mode: options.mode,
+            startEvent,
+            endEvent,
+            exclude: options.exclude || [],
+            include: options.include,
+            timezone,
+            abortSignal: ctx.abortSignal,
+          }),
       });
     }),
 
@@ -597,8 +749,15 @@ export const chartRouter = createTRPCRouter({
           }
         : input;
 
-      return ChartEngine.execute(chartInput, {
-        abortSignal: ctx.abortSignal,
+      return withReportDebug({
+        ctx,
+        input: chartInput,
+        route: 'chart',
+        run: (debugContext) =>
+          ChartEngine.execute(chartInput, {
+            abortSignal: ctx.abortSignal,
+            ...(debugContext ? { debugContext } : {}),
+          }),
       });
     }),
 
@@ -624,8 +783,15 @@ export const chartRouter = createTRPCRouter({
           }
         : input;
 
-      return AggregateChartEngine.execute(chartInput, {
-        abortSignal: ctx.abortSignal,
+      return withReportDebug({
+        ctx,
+        input: chartInput,
+        route: 'aggregate',
+        run: (debugContext) =>
+          AggregateChartEngine.execute(chartInput, {
+            abortSignal: ctx.abortSignal,
+            ...(debugContext ? { debugContext } : {}),
+          }),
       });
     }),
 
@@ -662,6 +828,16 @@ export const chartRouter = createTRPCRouter({
       const interval = ctx.report
         ? (input.interval ?? ctx.report.interval)
         : input.interval;
+      const debugStartedAt = Date.now();
+      const debugContext: ReportDebugContext | undefined =
+        isReportDebugLoggingEnabled()
+          ? {
+              id: `${ctx.req.id}:cohort:${debugStartedAt.toString(36)}`,
+              route: 'cohort',
+              projectId,
+              reportId: input.id,
+            }
+          : undefined;
 
       // Extract events from report series if shared
       if (ctx.report) {
@@ -723,6 +899,28 @@ export const chartRouter = createTRPCRouter({
       }[interval];
 
       const countCriteria = criteria === 'on_or_after' ? '>=' : '=';
+
+      if (debugContext) {
+        ctx.req.log.info(
+          {
+            event: 'report.start',
+            reportDebugId: debugContext.id,
+            reportRoute: 'cohort',
+            projectId,
+            reportId: input.id,
+            chartType: 'retention',
+            range: dateRange,
+            startDate,
+            endDate,
+            interval,
+            criteria,
+            firstEventCount: firstEvent.length,
+            secondEventCount: secondEvent.length,
+            diffInterval,
+          },
+          'report.start'
+        );
+      }
 
       const usersSelect = range(0, diffInterval + 1)
         .map(
@@ -802,13 +1000,59 @@ export const chartRouter = createTRPCRouter({
         ORDER BY cohort_interval ASC
       `;
 
-      const cohortData = await chQuery<{
+      let cohortData: Array<{
         cohort_interval: string;
         total_first_event_count: number;
         [key: string]: any;
-      }>(cohortQuery, undefined, { abortSignal: ctx.abortSignal });
+      }>;
+      try {
+        cohortData = await chQuery<{
+          cohort_interval: string;
+          total_first_event_count: number;
+          [key: string]: any;
+        }>(cohortQuery, undefined, {
+          abortSignal: ctx.abortSignal,
+          ...(debugContext ? { debugContext } : {}),
+          ...(debugContext ? { queryId: `${debugContext.id}:cohort` } : {}),
+          debugLabel: 'cohort',
+        });
+      } catch (error) {
+        if (debugContext) {
+          ctx.req.log.error(
+            {
+              event: 'report.error',
+              reportDebugId: debugContext.id,
+              reportRoute: 'cohort',
+              projectId,
+              reportId: input.id,
+              elapsedMs: Date.now() - debugStartedAt,
+              err: error,
+              errorMessage: getErrorMessage(error),
+            },
+            'report.error'
+          );
+        }
+        throw error;
+      }
 
-      return processCohortData(cohortData, diffInterval);
+      const result = processCohortData(cohortData, diffInterval);
+      if (debugContext) {
+        ctx.req.log.info(
+          {
+            event: 'report.done',
+            reportDebugId: debugContext.id,
+            reportRoute: 'cohort',
+            projectId,
+            reportId: input.id,
+            elapsedMs: Date.now() - debugStartedAt,
+            rows: cohortData.length,
+            resultRows: result.length,
+          },
+          'report.done'
+        );
+      }
+
+      return result;
     }),
 
   getProfiles: protectedProcedure
