@@ -101,11 +101,11 @@ export function SidebarContainer({
       <div
         className={cn(
           'fixed top-0 left-0 z-40 flex h-screen w-72 flex-col border-border border-r bg-card transition-transform',
-          '-translate-x-72 lg:-translate-x-0', // responsive
-          active && 'translate-x-0' // force active on mobile
+          '-translate-x-72',
+          active && 'translate-x-0'
         )}
       >
-        <div className="absolute -right-12 flex h-16 items-center lg:hidden">
+        <div className="absolute -right-12 flex h-16 items-center">
           <Button
             onClick={() => setActive((p) => !p)}
             size="icon"
