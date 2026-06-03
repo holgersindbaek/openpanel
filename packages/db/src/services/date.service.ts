@@ -350,16 +350,16 @@ export function getStrictReportCacheBoundary({
   };
 }
 
-export type ReportCacheBucket = {
+export interface ReportCacheBucket {
   id: string;
   startDate: string;
   endDate: string;
-};
+}
 
-export type ReportCacheRange = {
+export interface ReportCacheRange {
   startDate: string;
   endDate: string;
-};
+}
 
 export function getClosedReportCacheBuckets({
   startDate,
@@ -387,7 +387,7 @@ export function getClosedReportCacheBuckets({
   const buckets: ReportCacheBucket[] = [];
   const rawRanges: ReportCacheRange[] = [];
 
-  if (!rangeStart.isValid || !rangeEnd.isValid || rangeEnd < rangeStart) {
+  if (!(rangeStart.isValid && rangeEnd.isValid) || rangeEnd < rangeStart) {
     return {
       buckets,
       rawRanges: [{ startDate, endDate }],
@@ -487,7 +487,7 @@ export function getFullDayDateRange({
   const start = parseFlexibleChartDate(startDate, timezone);
   const end = parseFlexibleChartDate(endDate, timezone);
 
-  if (!start.isValid || !end.isValid || end < start) {
+  if (!(start.isValid && end.isValid) || end < start) {
     return null;
   }
 

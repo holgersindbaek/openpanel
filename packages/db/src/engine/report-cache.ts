@@ -15,9 +15,9 @@ import type { ConcreteSeries, Plan } from './types';
 
 const logger = createLogger({ name: 'report-cache-engine' });
 
-type FetchOptions = {
+interface FetchOptions {
   abortSignal?: AbortSignal;
-};
+}
 
 function getSeriesKey(series: ConcreteSeries) {
   return [series.definitionIndex, series.definitionId, ...series.name].join(

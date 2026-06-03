@@ -68,40 +68,40 @@ const UTM_COLUMNS = [
 ];
 
 // Types
-type MetricsRow = {
+interface MetricsRow {
   bounce_rate: number;
   unique_visitors: number;
   total_sessions: number;
   avg_session_duration: number;
   total_screen_views: number;
   views_per_session: number;
-};
+}
 
 type MetricsSeriesRow = MetricsRow & { date: string; total_revenue: number };
 
-type OverviewRollupSessionRow = {
+interface OverviewRollupSessionRow {
   date: string;
   total_sessions: number;
   bounced_sessions: number;
   total_screen_views: number;
   duration_sum: number;
   duration_count: number;
-};
+}
 
-type OverviewRollupUniqueRow = {
+interface OverviewRollupUniqueRow {
   date: string;
   unique_visitors: number;
-};
+}
 
-type OverviewRollupRevenueRow = {
+interface OverviewRollupRevenueRow {
   date: string;
   total_revenue: number;
-};
+}
 
-type OverviewRollupBucket = {
+interface OverviewRollupBucket {
   key: string;
   date: string;
-};
+}
 
 export const zGetMetricsInput = z.object({
   projectId: z.string(),
@@ -232,7 +232,7 @@ export type IGetMapDataInput = z.infer<typeof zGetMapDataInput> & {
 };
 
 export class OverviewService {
-  constructor(private client: typeof ch) {}
+  constructor(private readonly client: typeof ch) {}
 
   private getFillConfig(interval: string, startDate: string, endDate: string) {
     const useDateOnly = ['month', 'week'].includes(interval);
@@ -309,7 +309,7 @@ export class OverviewService {
     );
   }
 
-  private withDistinctSessionsIfNeeded<T>(
+  private withDistinctSessionsIfNeeded(
     query: ReturnType<typeof clix>,
     params: {
       filters: IChartEventFilter[];
@@ -508,7 +508,7 @@ export class OverviewService {
       date: row?.date ?? '',
       bounce_rate:
         totalSessions > 0
-          ? Math.round((bouncedSessions * 10000) / totalSessions) / 100
+          ? Math.round((bouncedSessions * 10_000) / totalSessions) / 100
           : 0,
       unique_visitors: uniqueVisitors,
       total_sessions: totalSessions,

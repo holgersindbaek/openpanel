@@ -30,12 +30,12 @@ const CACHEABLE_SEGMENTS = new Set<string>([
   'property_max',
 ]);
 
-export type ReportCacheEntry<TPayload> = {
+export interface ReportCacheEntry<TPayload> {
   bucketId: string;
   bucketStart: string;
   bucketEnd: string;
   payload: TPayload;
-};
+}
 
 export function isCacheableReportInterval(
   interval: string
@@ -200,7 +200,7 @@ export async function setReportCacheEntries<TPayload>({
   cacheKey: string;
   timezone: string;
   interval: CacheableReportInterval;
-  entries: Array<ReportCacheEntry<TPayload>>;
+  entries: ReportCacheEntry<TPayload>[];
 }) {
   if (entries.length === 0) {
     return;
