@@ -1,6 +1,5 @@
 import { Pagination, usePagination } from '@/components/pagination';
 import { Stats, StatsCard } from '@/components/stats';
-import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
   Table,
@@ -17,9 +16,9 @@ import { useSelector } from '@/redux';
 import { getPropertyLabel } from '@/translations/properties';
 import type { IChartData } from '@/trpc/client';
 import { getChartColor } from '@/utils/theme';
+import { round } from '@openpanel/common';
 import type * as React from 'react';
 
-import { logDependencies } from 'mathjs';
 import { PreviousDiffIndicator } from './previous-diff-indicator';
 import { SerieName } from './serie-name';
 
@@ -145,6 +144,7 @@ export function ReportTable({
               <TableRow>
                 <TableHead>Total</TableHead>
                 <TableHead>Average</TableHead>
+                <TableHead>Percentage</TableHead>
                 {data.series[0]?.data.map((serie) => (
                   <TableHead
                     key={serie.date.toString()}
@@ -157,6 +157,11 @@ export function ReportTable({
             </TableHeader>
             <TableBody>
               {paginate(data.series).map((serie) => {
+                const percentage =
+                  data.metrics.sum === 0
+                    ? 0
+                    : round((serie.metrics.sum / data.metrics.sum) * 100, 2);
+
                 return (
                   <TableRow key={`${serie.id}-2`}>
                     <TableCell className="h-10">
@@ -181,6 +186,11 @@ export function ReportTable({
                         <PreviousDiffIndicator
                           {...serie.metrics.previous?.average}
                         />
+                      </div>
+                    </TableCell>
+                    <TableCell className="h-10">
+                      <div className="flex items-center gap-2 font-medium text-muted-foreground">
+                        {number.format(percentage)}%
                       </div>
                     </TableCell>
 
