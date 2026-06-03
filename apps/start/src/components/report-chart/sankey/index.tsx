@@ -4,7 +4,11 @@ import { AspectContainer } from '../aspect-container';
 import { ReportChartEmpty } from '../common/empty';
 import { ReportChartError } from '../common/error';
 import { ReportChartLoading } from '../common/loading';
-import { useReportChartContext } from '../context';
+import {
+  useReleaseReportQueryQueue,
+  useReportChartContext,
+  useReportQueryQueue,
+} from '../context';
 import { Chart } from './chart';
 import { useTRPC } from '@/integrations/trpc/react';
 
@@ -37,18 +41,21 @@ export function ReportSankeyChart() {
     ...(options ? { options } : {}),
   };
   const trpc = useTRPC();
+  const baseEnabled = !!options && !isLazyLoading && input.series.length > 0;
+  const reportQuery = useReportQueryQueue(baseEnabled, ['sankey', input]);
   const res = useQuery(
     trpc.chart.sankey.queryOptions(input, {
-      enabled: !!options && !isLazyLoading && input.series.length > 0,
+      enabled: reportQuery.enabled,
       trpc: { abortOnUnmount: true },
     })
   );
+  useReleaseReportQueryQueue(reportQuery, res.fetchStatus, res.status);
 
   if (!options) {
     return <Empty />;
   }
 
-  if (isLazyLoading || res.isLoading) {
+  if (isLazyLoading || reportQuery.isQueued || res.isLoading) {
     return <Loading />;
   }
 

@@ -3,7 +3,11 @@ import { AspectContainer } from '../aspect-container';
 import { ReportChartEmpty } from '../common/empty';
 import { ReportChartError } from '../common/error';
 import { ReportChartLoading } from '../common/loading';
-import { useReportChartContext } from '../context';
+import {
+  useReleaseReportQueryQueue,
+  useReportChartContext,
+  useReportQueryQueue,
+} from '../context';
 import { Chart } from './chart';
 import CohortTable from './table';
 import { useTRPC } from '@/integrations/trpc/react';
@@ -21,33 +25,33 @@ export function ReportRetentionChart() {
   const criteria = retentionOptions?.criteria ?? 'on_or_after';
 
   const trpc = useTRPC();
+  const queryInput = {
+    firstEvent,
+    secondEvent,
+    projectId: report.projectId,
+    range: report.range,
+    startDate: report.startDate,
+    endDate: report.endDate,
+    criteria,
+    interval: report.interval,
+    shareId,
+    id: 'id' in report ? report.id : undefined,
+  };
+  const reportQuery = useReportQueryQueue(isEnabled, ['cohort', queryInput]);
   const res = useQuery(
-    trpc.chart.cohort.queryOptions(
-      {
-        firstEvent,
-        secondEvent,
-        projectId: report.projectId,
-        range: report.range,
-        startDate: report.startDate,
-        endDate: report.endDate,
-        criteria,
-        interval: report.interval,
-        shareId,
-        id: 'id' in report ? report.id : undefined,
-      },
-      {
-        placeholderData: keepPreviousData,
-        enabled: isEnabled,
-        trpc: { abortOnUnmount: true },
-      }
-    )
+    trpc.chart.cohort.queryOptions(queryInput, {
+      placeholderData: keepPreviousData,
+      enabled: reportQuery.enabled,
+      trpc: { abortOnUnmount: true },
+    })
   );
+  useReleaseReportQueryQueue(reportQuery, res.fetchStatus, res.status);
 
   if (!isEnabled) {
     return <Disabled />;
   }
 
-  if (isLazyLoading || res.isLoading) {
+  if (isLazyLoading || reportQuery.isQueued || res.isLoading) {
     return <Loading />;
   }
 

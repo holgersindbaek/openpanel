@@ -3,7 +3,12 @@ import { AspectContainer } from '../aspect-container';
 import { ReportChartEmpty } from '../common/empty';
 import { ReportChartError } from '../common/error';
 import { ReportChartLoading } from '../common/loading';
-import { useChartInput, useReportChartContext } from '../context';
+import {
+  useChartInput,
+  useReleaseReportQueryQueue,
+  useReportChartContext,
+  useReportQueryQueue,
+} from '../context';
 import { BreakdownList } from './breakdown-list';
 import { Chart, Summary } from './chart';
 import { changeVisibleSeries } from '@/components/report/reportSlice';
@@ -17,6 +22,12 @@ export function ReportFunnelChart() {
   const chartInput = useChartInput();
   const dispatch = useDispatch();
   const trpc = useTRPC();
+  const baseEnabled = !isLazyLoading && chartInput.series.length > 0;
+  const reportQuery = useReportQueryQueue(baseEnabled, [
+    'funnel',
+    chartInput,
+    shareId,
+  ]);
   const res = useQuery(
     trpc.chart.funnel.queryOptions(
       {
@@ -24,11 +35,12 @@ export function ReportFunnelChart() {
         shareId,
       },
       {
-        enabled: !isLazyLoading && chartInput.series.length > 0,
+        enabled: reportQuery.enabled,
         trpc: { abortOnUnmount: true },
       }
     )
   );
+  useReleaseReportQueryQueue(reportQuery, res.fetchStatus, res.status);
 
   // Hook for limiting which breakdowns are shown in the chart only
   const { breakdowns: visibleBreakdowns, setVisibleSeries } =
@@ -40,7 +52,7 @@ export function ReportFunnelChart() {
         : undefined,
     });
 
-  if (isLazyLoading || res.isLoading) {
+  if (isLazyLoading || reportQuery.isQueued || res.isLoading) {
     return <Loading />;
   }
 

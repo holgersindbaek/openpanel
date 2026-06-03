@@ -3,7 +3,12 @@ import { AspectContainer } from '../aspect-container';
 import { ReportChartEmpty } from '../common/empty';
 import { ReportChartError } from '../common/error';
 import { ReportChartLoading } from '../common/loading';
-import { useChartInput, useReportChartContext } from '../context';
+import {
+  useChartInput,
+  useReleaseReportQueryQueue,
+  useReportChartContext,
+  useReportQueryQueue,
+} from '../context';
 import { Chart } from './chart';
 import { useTRPC } from '@/integrations/trpc/react';
 
@@ -11,6 +16,11 @@ export function ReportPieChart() {
   const { isLazyLoading, shareId } = useReportChartContext();
   const chartInput = useChartInput();
   const trpc = useTRPC();
+  const reportQuery = useReportQueryQueue(!isLazyLoading, [
+    'aggregate',
+    chartInput,
+    shareId,
+  ]);
 
   const res = useQuery(
     trpc.chart.aggregate.queryOptions(
@@ -20,14 +30,16 @@ export function ReportPieChart() {
       },
       {
         placeholderData: keepPreviousData,
-        enabled: !isLazyLoading,
+        enabled: reportQuery.enabled,
         trpc: { abortOnUnmount: true },
       }
     )
   );
+  useReleaseReportQueryQueue(reportQuery, res.fetchStatus, res.status);
 
   if (
     isLazyLoading ||
+    reportQuery.isQueued ||
     res.isLoading ||
     (res.isFetching && !res.data?.series.length)
   ) {
