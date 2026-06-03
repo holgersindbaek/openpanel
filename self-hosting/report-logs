@@ -3,14 +3,220 @@
 set -euo pipefail
 
 file=${1:-"report-debug-$(date +%Y%m%d-%H%M%S).log"}
+raw_file=${REPORT_LOGS_RAW_FILE:-"${file%.log}.raw.log"}
 enabled=$(docker compose exec -T op-api sh -lc 'printf "%s" "${REPORT_DEBUG_LOGS:-false}"' 2>/dev/null || true)
 
 if [ "$enabled" != "true" ]; then
   echo "REPORT_DEBUG_LOGS is '$enabled' in op-api. Enable it in .env and recreate op-api to see report debug logs." >&2
 fi
 
-echo "Writing report debug logs to $file" >&2
+filter='"event":"report\.|"msg":"report\.clickhouse\.'
 
-docker compose logs -f --tail="${TAIL:-0}" op-api 2>&1 \
-  | grep --line-buffered '"event":"report\.' \
+stream_logs() {
+  docker compose logs -f --tail="${TAIL:-0}" op-api 2>&1 \
+    | grep --line-buffered -E "$filter"
+}
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "Node.js was not found on the host; writing raw report debug logs to $file" >&2
+  stream_logs | tee "$file"
+  exit 0
+fi
+
+echo "Writing compact report debug logs to $file" >&2
+echo "Writing raw report debug JSON to $raw_file" >&2
+
+stream_logs \
+  | tee "$raw_file" \
+  | node -e '
+const readline = require("node:readline");
+
+const rl = readline.createInterface({
+  input: process.stdin,
+  crlfDelay: Infinity,
+});
+
+function parseLine(line) {
+  const start = line.indexOf("{");
+  if (start === -1) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(line.slice(start));
+  } catch {
+    return undefined;
+  }
+}
+
+function timeOf(entry) {
+  if (typeof entry.time === "number") {
+    return new Date(entry.time).toISOString().slice(11, 19);
+  }
+
+  return new Date().toISOString().slice(11, 19);
+}
+
+function short(value) {
+  return typeof value === "string" && value.length > 0
+    ? value.slice(0, 8)
+    : undefined;
+}
+
+function duration(entry) {
+  const value = entry.elapsedMs ?? entry.elapsed;
+  return typeof value === "number" ? `${Math.round(value)}ms` : undefined;
+}
+
+function asList(value) {
+  if (!Array.isArray(value) || value.length === 0) {
+    return undefined;
+  }
+
+  return value.filter(Boolean).join(",");
+}
+
+function firstSeries(entry) {
+  return Array.isArray(entry.eventSeries) ? entry.eventSeries[0] : undefined;
+}
+
+function reportLabel(entry) {
+  const series = firstSeries(entry);
+  const event = series?.name ?? entry.event;
+  const segment = series?.segment ?? entry.segment;
+  const parts = [];
+
+  if (event) {
+    parts.push(`event=${event}`);
+  }
+  if (segment) {
+    parts.push(`segment=${segment}`);
+  }
+  if (entry.property ?? series?.property) {
+    parts.push(`property=${entry.property ?? series.property}`);
+  }
+  if (typeof entry.filters === "number") {
+    parts.push(`filters=${entry.filters}`);
+  } else if (typeof series?.filters === "number") {
+    parts.push(`filters=${series.filters}`);
+  }
+  if (asList(entry.breakdowns)) {
+    parts.push(`breakdowns=${asList(entry.breakdowns)}`);
+  }
+
+  return parts.join(" ");
+}
+
+function output(entry) {
+  const event = String(entry.event || entry.msg || "");
+  const kind = event.replace(/^report\./, "");
+  const id = short(entry.reportId) ?? short(entry.reportDebugId);
+  const prefix = [timeOf(entry), kind, id ? `id=${id}` : undefined];
+  let rest = [];
+
+  switch (kind) {
+    case "start":
+      rest = [
+        entry.reportRoute,
+        entry.chartType,
+        entry.range ? `range=${entry.range}` : undefined,
+        entry.interval ? `interval=${entry.interval}` : undefined,
+        reportLabel(entry),
+      ];
+      break;
+    case "cache.plan":
+      rest = [
+        entry.interval ? `interval=${entry.interval}` : undefined,
+        `buckets=${entry.buckets ?? 0}`,
+        `rawRanges=${entry.rawRanges ?? 0}`,
+      ];
+      break;
+    case "cache.read.done":
+      rest = [
+        duration(entry),
+        `hits=${entry.hits ?? 0}/${entry.requestedBuckets ?? 0}`,
+        `misses=${entry.misses ?? 0}`,
+      ];
+      break;
+    case "cache.ineligible":
+      rest = [`reason=${entry.reason}`];
+      break;
+    case "cache.raw_fetch.start":
+      rest = [
+        `source=${entry.source}`,
+        entry.startDate ? `from=${entry.startDate}` : undefined,
+        entry.endDate ? `to=${entry.endDate}` : undefined,
+      ];
+      break;
+    case "cache.raw_fetch.done":
+      rest = [duration(entry), `source=${entry.source}`, `series=${entry.series ?? 0}`];
+      break;
+    case "query.start":
+      rest = [
+        entry.engine,
+        entry.queryId ? `q=${entry.queryId}` : undefined,
+        reportLabel(entry),
+      ];
+      break;
+    case "query.done":
+      rest = [
+        duration(entry),
+        entry.engine,
+        entry.queryId ? `q=${entry.queryId}` : undefined,
+        `rows=${entry.rows ?? 0}`,
+        `series=${entry.groupedSeries ?? entry.series ?? 0}`,
+      ];
+      break;
+    case "clickhouse.start":
+      rest = [
+        entry.reportQueryLabel,
+        entry.queryId ? `q=${entry.queryId}` : undefined,
+        entry.host ? `host=${entry.host}` : undefined,
+      ];
+      break;
+    case "clickhouse.query":
+      rest = [
+        duration(entry),
+        entry.reportQueryLabel,
+        entry.queryId ? `q=${entry.queryId}` : undefined,
+        entry.host ? `host=${entry.host}` : undefined,
+        `rows=${entry.rows ?? 0}`,
+        entry.stats?.rows_read ? `read=${entry.stats.rows_read}` : undefined,
+      ];
+      break;
+    case "done":
+    case "engine.done":
+      rest = [
+        duration(entry),
+        entry.engine,
+        entry.responseSeries ? `series=${entry.responseSeries}` : undefined,
+      ];
+      break;
+    case "error":
+    case "cache.raw_fetch.error":
+      rest = [duration(entry), entry.err?.message ?? entry.message ?? "error"];
+      break;
+    default:
+      rest = [
+        duration(entry),
+        entry.engine,
+        entry.source ? `source=${entry.source}` : undefined,
+        entry.rows !== undefined ? `rows=${entry.rows}` : undefined,
+        entry.series !== undefined ? `series=${entry.series}` : undefined,
+        entry.reason ? `reason=${entry.reason}` : undefined,
+      ];
+  }
+
+  return [...prefix, ...rest].filter(Boolean).join(" ");
+}
+
+rl.on("line", (line) => {
+  const entry = parseLine(line);
+  if (!entry) {
+    return;
+  }
+
+  console.log(output(entry));
+});
+' \
   | tee "$file"

@@ -8,7 +8,10 @@ import type { NodeClickHouseClientConfigOptions } from '@clickhouse/client/dist/
 import { createLogger } from '@openpanel/logger';
 import type { IInterval } from '@openpanel/validation';
 import sqlstring from 'sqlstring';
-import type { ReportDebugContext } from '../engine/report-debug';
+import {
+  logReportDebug,
+  type ReportDebugContext,
+} from '../engine/report-debug';
 import { RoundRobinPicker, withRoundRobinRetry } from './round-robin';
 
 export { createClient } from '@clickhouse/client';
@@ -382,9 +385,17 @@ export async function chQueryWithMeta<T extends Record<string, any>>(
   options?: ChQueryOptions
 ): Promise<ResponseJSON<T>> {
   const start = Date.now();
+  const cleanedQuery = cleanQuery(query);
   let host: string | undefined;
   const res = await withQueryRetry((client, ctx) => {
     host = urlHostname(ctx.url);
+    logReportDebug(logger, 'clickhouse.start', options?.debugContext, {
+      host,
+      queryId: options?.queryId,
+      reportQueryLabel: options?.debugLabel,
+      query: cleanedQuery,
+      clickhouseSettings,
+    });
     return client.query({
       query,
       ...(options?.queryId ? { query_id: options.queryId } : {}),
@@ -410,21 +421,39 @@ export async function chQueryWithMeta<T extends Record<string, any>>(
     }),
   };
 
-  logger.info(
-    {
-      host,
-      queryId: options?.queryId,
-      reportDebugId: options?.debugContext?.id,
-      reportRoute: options?.debugContext?.route,
-      reportQueryLabel: options?.debugLabel,
-      query: cleanQuery(query),
-      rows: json.rows,
-      stats: response.statistics,
-      elapsed: Date.now() - start,
-      clickhouseSettings,
-    },
-    options?.debugContext ? 'report.clickhouse.query' : 'query info'
-  );
+  const logPayload = {
+    host,
+    queryId: options?.queryId,
+    reportQueryLabel: options?.debugLabel,
+    query: cleanedQuery,
+    rows: json.rows,
+    stats: response.statistics,
+    elapsedMs: Date.now() - start,
+    clickhouseSettings,
+  };
+
+  if (options?.debugContext) {
+    logReportDebug(
+      logger,
+      'clickhouse.query',
+      options.debugContext,
+      logPayload
+    );
+  } else {
+    logger.info(
+      {
+        host,
+        queryId: options?.queryId,
+        reportQueryLabel: options?.debugLabel,
+        query: cleanedQuery,
+        rows: json.rows,
+        stats: response.statistics,
+        elapsedMs: Date.now() - start,
+        clickhouseSettings,
+      },
+      'query info'
+    );
+  }
 
   return response;
 }
