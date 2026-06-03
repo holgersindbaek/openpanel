@@ -172,7 +172,7 @@ export function ReportItem({
         )}
       >
         <ReportChart
-          lazy={false}
+          lazy={true}
           report={{
             ...report,
             range: range ?? report.range,
@@ -241,7 +241,7 @@ export function ReportItemReadOnly({
         )}
       >
         <ReportChart
-          lazy={false}
+          lazy={true}
           report={{
             ...report,
             range: range ?? report.range,
