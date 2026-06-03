@@ -274,7 +274,7 @@ describe('chart.service / getChartSql', () => {
 
   it('first_seen segment uses argMin instead of joining events back to itself', async () => {
     const sql = await getChartSql({
-      event: event({ segment: 'first_seen' }),
+      event: event({ name: 'Pageview', segment: 'first_seen' }),
       breakdowns: [],
       interval: 'day',
       startDate: START,
@@ -287,6 +287,8 @@ describe('chart.service / getChartSql', () => {
     expect(sql.replace(/\s+/g, ' ')).toContain(
       'argMin(tuple(profile_id, created_at), created_at)'
     );
+    expect(sql).toContain(`WHERE project_id = '${PROJECT_ID}'`);
+    expect(sql).not.toMatch(/\)\s*e\s+WHERE\s+project_id\s*=/);
     expect(sql).not.toContain('tupleElement(first_event, 3)');
     expect(sql).not.toContain('e.name =');
     expect(sql).not.toMatch(
@@ -433,6 +435,21 @@ describe('chart.service / getAggregateChartSql', () => {
     });
 
     expect(sql).toContain('uniq(profile_id) as total_count');
+  });
+
+  it('first_seen aggregate does not emit project_id in outer query', async () => {
+    const sql = await getAggregateChartSql({
+      event: event({ name: 'Pageview', segment: 'first_seen' }),
+      breakdowns: [],
+      startDate: START,
+      endDate: END,
+      projectId: PROJECT_ID,
+      timezone: 'UTC',
+    });
+
+    expect(sql).toContain(`WHERE project_id = '${PROJECT_ID}'`);
+    expect(sql).not.toMatch(/\)\s*e\s+WHERE\s+project_id\s*=/);
+    expect(sql).toMatch(/\)\s*e\s+WHERE\s+created_at\s+>=/);
   });
 
   itCH('drops all-cohorts breakdown on empty cohort project', async () => {

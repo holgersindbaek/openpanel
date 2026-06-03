@@ -828,6 +828,10 @@ export async function getChartSql({
       getFirstSeenColumns(event, breakdowns)
     );
     sb.select.count = 'countDistinct(profile_id) as count';
+    // The first_seen subquery already filters by project_id. The outer query
+    // only exposes the selected first-event columns, so re-emitting project_id
+    // there fails with UNKNOWN_IDENTIFIER.
+    delete sb.where.projectId;
   }
 
   const mathFunction = {
@@ -1213,6 +1217,10 @@ export async function getAggregateChartSql({
       getFirstSeenColumns(event, breakdowns)
     );
     sb.select.count = 'countDistinct(profile_id) as count';
+    // The first_seen subquery already filters by project_id. The outer query
+    // only exposes the selected first-event columns, so re-emitting project_id
+    // there fails with UNKNOWN_IDENTIFIER.
+    delete sb.where.projectId;
   }
 
   const mathFunction = {
